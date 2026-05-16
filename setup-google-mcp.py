@@ -258,19 +258,42 @@ def run_vendor_auth(service_key, creds_path, token_path):
     print(f"  cwd: {cwd}")
     print(f"  env: {s['env_credentials_var']}={creds_path}")
     print(f"       {s['env_token_var']}={token_path}")
-    print("\n  Your browser should open. Sign in with the Google account whose")
+    if _under_snap():
+        print()
+        print("  ⚠ SNAP-CONFINED ENVIRONMENT DETECTED (e.g. snap-installed VS Code).")
+        print("     The vendor will try to auto-open your browser via xdg-open, which")
+        print("     fails silently inside a snap sandbox. Watch the vendor output for")
+        print("     a line starting with 'If the browser doesn't open, visit:' — copy")
+        print("     that URL into a normal browser window OUTSIDE the snap'd app.")
+    print()
+    print("  Your browser should open. Sign in with the Google account whose")
     print("  Drive/Calendar/Gmail you want this MCP server to access. Approve")
-    print("  the scopes you set on the consent screen.\n")
-    result = subprocess.run(cmd, cwd=cwd, env=env)
+    print("  the scopes you set on the consent screen.")
+    print()
+    print("  If the browser does NOT open within ~5 seconds, watch the vendor")
+    print("  output below for the fallback URL — copy/paste it manually.")
+    print()
+    try:
+        result = subprocess.run(cmd, cwd=cwd, env=env)
+    except KeyboardInterrupt:
+        print()
+        print("  Interrupted. The vendor auth process was killed.")
+        print("  Re-run this script when you're ready to retry.")
+        return False
     if result.returncode != 0:
         print(f"\n  ✗ Vendor auth subcommand failed with exit code {result.returncode}.")
         print("  Common causes:")
         print("   - 'Access blocked: <App> has not completed the Google verification process'")
         print("     → Add your email as Test User on the OAuth consent screen.")
         print("   - 'redirect_uri_mismatch' → confirm the OAuth client is Desktop App type.")
-        print("   - Browser didn't open → run this on a machine with a desktop env.")
+        print("   - Browser didn't open AND you're inside a snap sandbox → use the")
+        print("     fallback URL the vendor printed, in a NON-snap'd browser window.")
         return False
     return True
+
+
+def _under_snap():
+    return any(os.environ.get(k) for k in ("SNAP", "SNAP_NAME", "SNAP_INSTANCE_NAME"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

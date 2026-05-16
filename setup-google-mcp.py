@@ -57,9 +57,13 @@ def _drive_test(svc):
     return svc.about().get(fields="user").execute().get("user", {}).get("emailAddress")
 
 
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 SERVICES = {
     "gmail": {
         "label": "Gmail",
+        "short": "Gmail",
         "api_id": "gmail.googleapis.com",
         "api_url": "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
         "scopes": [
@@ -80,6 +84,7 @@ SERVICES = {
     },
     "calendar": {
         "label": "Google Calendar",
+        "short": "Calendar",
         "api_id": "calendar-json.googleapis.com",
         "api_url": "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com",
         "scopes": ["https://www.googleapis.com/auth/calendar"],
@@ -97,6 +102,7 @@ SERVICES = {
     },
     "drive": {
         "label": "Google Drive",
+        "short": "Drive",
         "api_id": "drive.googleapis.com",
         "api_url": "https://console.cloud.google.com/apis/library/drive.googleapis.com",
         "scopes": ["https://www.googleapis.com/auth/drive"],
@@ -215,6 +221,18 @@ def validate_oauth_keys(path_str):
 
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def email_to_safe_part(email):
+    # 'minaalfykamel@gmail.com' -> 'minaalfykamel-gmail-com'
+    # Stays in `claude mcp add`'s allowed charset: [A-Za-z0-9_-].
+    return re.sub(r"[^A-Za-z0-9]+", "-", email).strip("-")
+
+
+def validate_mcp_name(name):
+    if not NAME_RE.match(name):
+        return False, "claude mcp names accept letters, numbers, hyphens, underscores ONLY (no spaces, no @, no .)"
+    return True, None
 
 
 def make_state_dir(service_key, slug):
@@ -388,8 +406,10 @@ def cmd_setup(service_key):
 
     # STEP 5 — title prompt
     step(5, "Pick a title for this MCP server in Claude Code")
-    default_title = f"{email} - {s['label']}"
-    title = prompt("Title", default=default_title)
+    print("  Note: claude mcp names accept letters, numbers, hyphens, and underscores only.")
+    print(f"  Default below is a slug of the detected email + service.")
+    default_title = f"{email_to_safe_part(email)}-{s['short']}"
+    title = prompt("Title", default=default_title, validator=validate_mcp_name)
     final_slug = slugify(title)
     final_dir = STATE_ROOT / service_key / final_slug
     if final_dir.exists() and final_dir != state_dir:

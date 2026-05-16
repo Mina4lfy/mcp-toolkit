@@ -1,0 +1,11 @@
+# OAuth keys + per-server token files — never commit
+state/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
+*.swp

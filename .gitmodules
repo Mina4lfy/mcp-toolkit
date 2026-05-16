@@ -1,0 +1,9 @@
+[submodule "vendor/gmail-mcp"]
+	path = vendor/gmail-mcp
+	url = https://github.com/GongRzhe/Gmail-MCP-Server.git
+[submodule "vendor/google-calendar-mcp"]
+	path = vendor/google-calendar-mcp
+	url = https://github.com/nspady/google-calendar-mcp.git
+[submodule "vendor/google-drive-mcp"]
+	path = vendor/google-drive-mcp
+	url = https://github.com/piotr-agier/google-drive-mcp.git

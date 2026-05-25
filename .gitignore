@@ -15,4 +15,4 @@ build/
 *.swp
 
 # MCP Toolkit.
-client*.json
+*_client_secret*.json

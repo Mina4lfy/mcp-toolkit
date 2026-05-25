@@ -749,6 +749,130 @@ def test_connection(service_key, token_path):
 # Claude Code registration
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _build_spawn_command(launcher, package, local_dir=None, console_script=None, extra_args=None):
+    """Reproduce the command claude-code will spawn for this MCP server, so we
+    can drive it directly with a JSON-RPC handshake instead of trusting that
+    `claude mcp add` exit-0 means the server actually starts."""
+    if launcher == "npx":
+        cmd = ["npx", "-y", package]
+    elif launcher == "uvx":
+        cmd = ["uvx", package]
+    elif launcher == "uv_local":
+        if not local_dir:
+            raise ValueError("uv_local launcher requires local_dir")
+        cmd = ["uv", "run", "--directory", str(local_dir)]
+        cmd += [console_script] if console_script else ["python", "-m", package]
+    else:
+        raise ValueError(f"unknown launcher: {launcher}")
+    if extra_args:
+        cmd += list(extra_args)
+    return cmd
+
+
+def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90):
+    """Spawn the just-registered MCP server and drive an initialize +
+    tools/list JSON-RPC round-trip over stdio. Returns (ok, message, tool_count).
+
+    What this catches:
+      • launcher missing on PATH (npx/uvx/uv not installed)
+      • vendor package broken or missing after install
+      • env vars not propagated through the registration
+      • server crashes during initialize
+    What it does NOT catch:
+      • credential rejection on first real tool call (auth-flow-specific
+        pre-registration probes already cover this for the flows that can)
+    """
+    try:
+        cmd = _build_spawn_command(launcher, package, local_dir, console_script, extra_args)
+    except ValueError as e:
+        return False, str(e), 0
+
+    env = os.environ.copy()
+    for k, v in env_pairs.items():
+        if v != "":
+            env[k] = v
+
+    requests = (
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+        '{"protocolVersion":"2024-11-05","capabilities":{},'
+        '"clientInfo":{"name":"setup-mcp.py","version":"0"}}}\n'
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
+    )
+
+    try:
+        result = subprocess.run(
+            cmd, input=requests, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"server didn't respond within {timeout}s (first-run npm/uvx install can be slow — retry once)", 0
+    except FileNotFoundError:
+        return False, f"launcher binary not found on PATH: '{cmd[0]}'", 0
+    except Exception as e:
+        return False, f"failed to spawn server: {e}", 0
+
+    init_ok = False
+    server_info = ""
+    tools_count = 0
+    tools_error = None
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if msg.get("id") == 1 and "result" in msg:
+            init_ok = True
+            sinfo = msg["result"].get("serverInfo") or {}
+            server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
+        elif msg.get("id") == 2 and "result" in msg and "tools" in msg["result"]:
+            tools_count = len(msg["result"]["tools"])
+        elif msg.get("id") == 2 and "error" in msg:
+            tools_error = msg["error"]
+
+    if not init_ok:
+        tail = "\n".join((result.stderr or "").splitlines()[-12:])
+        return False, (
+            f"server didn't complete initialize (exit {result.returncode}).\n"
+            f"    stderr tail:\n      " + tail.replace("\n", "\n      ")
+        ), 0
+    if tools_error:
+        return False, f"initialize OK ({server_info}) but tools/list errored: {tools_error}", 0
+    return True, f"{server_info} responded — {tools_count} tools exposed", tools_count
+
+
+def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None):
+    """Run the post-registration handshake test. On failure, roll back the
+    `claude mcp add` so Claude Code doesn't carry a broken handle, and return
+    False. State dir is preserved for debugging."""
+    if step_num is not None:
+        step(step_num, "Smoke test — JSON-RPC round-trip against the registered server")
+    print("  Spawning the same command Claude Code will use, sending initialize + tools/list…")
+    ok, msg, _ = _mcp_handshake_test(
+        launcher=launcher, package=package, env_pairs=env_pairs,
+        extra_args=extra_args, local_dir=local_dir, console_script=console_script,
+    )
+    if ok:
+        print(f"  ✓ {msg}")
+        return True
+    print(f"  ✗ Handshake failed: {msg}")
+    print()
+    print("  Rolling back the registration so the session won't load a broken server…")
+    rm = subprocess.run(
+        ["claude", "mcp", "remove", "--scope", "user", title],
+        capture_output=True, text=True,
+    )
+    if rm.returncode == 0:
+        print(f"  ✓ unregistered '{title}'.")
+    else:
+        print(f"  ⚠ rollback failed (exit {rm.returncode}): {rm.stderr.strip()}")
+        print(f"     Run manually: claude mcp remove --scope user {title}")
+    print(f"  ⓘ State dir preserved at {final_dir} for debugging.")
+    return False
+
+
 def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=None, console_script=None, extra_args=None):
     cmd = ["claude", "mcp", "add", "--scope", "user", title]
     for k, v in env_pairs.items():
@@ -756,27 +880,11 @@ def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=No
             continue
         cmd += ["--env", f"{k}={v}"]
     cmd += ["--"]
-    if launcher == "npx":
-        cmd += ["npx", "-y", package]
-    elif launcher == "uvx":
-        cmd += ["uvx", package]
-    elif launcher == "uv_local":
-        # Run from a local source tree via uv. The directory must be a Python
-        # project with a [project.scripts] entry matching console_script, OR
-        # provide a module via -m.
-        if not local_dir:
-            print("  ✗ uv_local launcher requires local_dir")
-            return False
-        cmd += ["uv", "run", "--directory", str(local_dir)]
-        if console_script:
-            cmd += [console_script]
-        else:
-            cmd += ["python", "-m", package]
-    else:
-        print(f"  ✗ Unknown launcher: {launcher}")
+    try:
+        cmd += _build_spawn_command(launcher, package, local_dir, console_script, extra_args)
+    except ValueError as e:
+        print(f"  ✗ {e}")
         return False
-    if extra_args:
-        cmd += list(extra_args)
     step(step_num, f"Registering with Claude Code as '{title}'")
     print("  command:")
     redacted = []
@@ -881,20 +989,28 @@ def _setup_oauth_browser(service_key, s):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+    env_pairs = {
+        s["env_credentials_var"]: str(creds_path),
+        s["env_token_var"]: str(token_path),
+    }
     ok = claude_mcp_add(
         title=title,
         launcher=s["launcher"],
         package=s["npx_package"],
-        env_pairs={
-            s["env_credentials_var"]: str(creds_path),
-            s["env_token_var"]: str(token_path),
-        },
+        env_pairs=env_pairs,
     )
     if not ok:
         return 1
 
+    if not _finalize_with_handshake(
+        title=title, final_dir=final_dir,
+        launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
+        step_num=7,
+    ):
+        return 1
+
     hr("═")
-    print(f"  ✓ Done. '{title}' is registered.")
+    print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
     print(f"    Run `claude mcp list` to confirm and restart your session.")
     hr("═")
@@ -999,8 +1115,15 @@ def _setup_api_token(service_key, s):
     if not ok:
         return 1
 
+    if not _finalize_with_handshake(
+        title=title, final_dir=final_dir,
+        launcher=s["launcher"], package=package, env_pairs=values,
+        step_num=6,
+    ):
+        return 1
+
     hr("═")
-    print(f"  ✓ Done. '{title}' is registered.")
+    print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
     print(f"    Rotate the PAT later by re-running this command with the same title.")
     print(f"    Run `claude mcp list` to confirm and restart your session.")
@@ -1152,8 +1275,16 @@ def _setup_cookie_paste(service_key, s):
     if not ok:
         return 1
 
+    if not _finalize_with_handshake(
+        title=title, final_dir=final_dir,
+        launcher=s["launcher"], package=s["local_pkg_dir"], env_pairs=env_pairs,
+        local_dir=local_dir, console_script=s.get("local_pkg_console_script"),
+        step_num=6,
+    ):
+        return 1
+
     hr("═")
-    print(f"  ✓ Done. '{title}' is registered.")
+    print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
     print(f"    Restart your Claude Code session to load tools.")
     print(f"    Rotate cookies later by re-running this command with the same title.")
@@ -1486,8 +1617,15 @@ def _setup_entra_login(service_key, s):
     if not ok:
         return 1
 
+    if not _finalize_with_handshake(
+        title=title, final_dir=final_dir,
+        launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
+        extra_args=extra_args, step_num=7,
+    ):
+        return 1
+
     hr("═")
-    print(f"  ✓ Done. '{title}' is registered and credentials are verified.")
+    print(f"  ✓ Done. '{title}' is registered, credentials are verified, and the server answers MCP handshake.")
     print(f"    State:  {final_dir}")
     if auth_method == "interactive":
         print("    ⚠ The vendor will open an Entra browser tab on the first tool call.")

@@ -1,9 +1,13 @@
-# OAuth keys + per-server token files — never commit
+# OAuth keys + per-server token files + LinkedIn cookies + Playwright profile
 state/
 
 # Python
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+dist/
+build/
 
 # Editor
 .vscode/

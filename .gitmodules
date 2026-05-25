@@ -13,3 +13,9 @@
 [submodule "vendor/tempo-filler-mcp-server"]
 	path = vendor/tempo-filler-mcp-server
 	url = https://github.com/tranzact/tempo-filler-mcp-server.git
+[submodule "vendor/azure-devops-mcp"]
+	path = vendor/azure-devops-mcp
+	url = https://github.com/microsoft/azure-devops-mcp.git
+[submodule "vendor/azure-devops-mcp-tiberriver"]
+	path = vendor/azure-devops-mcp-tiberriver
+	url = https://github.com/Tiberriver256/mcp-server-azure-devops.git

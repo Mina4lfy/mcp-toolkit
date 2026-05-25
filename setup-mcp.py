@@ -8,7 +8,7 @@
 # ]
 # ///
 """
-setup-mcp.py — interactive setup for MCP servers (Google + Atlassian + Tempo).
+setup-mcp.py — interactive setup for MCP servers.
 
 Usage:
     ./setup-mcp.py google-gmail
@@ -16,11 +16,14 @@ Usage:
     ./setup-mcp.py google-drive
     ./setup-mcp.py atlassian-sooperset
     ./setup-mcp.py tempo-filler
-    ./setup-mcp.py doctor            # list registered MCPs + their state
+    ./setup-mcp.py azure-devops              # Microsoft official, Entra/azcli/PAT
+    ./setup-mcp.py azure-devops-tiberriver   # Community PAT fallback
+    ./setup-mcp.py linkedin
+    ./setup-mcp.py doctor                    # list registered MCPs + their state
 
 Or use the wrapper scripts under ./bin/.
 
-Two auth flavours are supported:
+Four auth flavours are supported:
 
   • oauth_browser  (Google services)
     1. Prints the Google Cloud Console steps you need to do manually.
@@ -30,18 +33,27 @@ Two auth flavours are supported:
     5. Prompts for a server title (defaults to `<email-handle>-<ServiceName>`).
     6. Registers via `claude mcp add --scope user -- npx -y <pkg>`.
 
-  • api_token  (Atlassian Data Center, Tempo Server)
-    1. Prints where to generate the PAT in your Jira profile.
+  • api_token  (Atlassian DC, Tempo Server, Azure DevOps via Tiberriver256)
+    1. Prints where to generate the PAT in your Jira / Azure DevOps profile.
     2. Prompts for each required/optional env var.
     3. Writes `state/<svc>/<slug>/env` (mode 600) for rotation/inspection.
     4. Title default is `<host-slug>-<ServiceName>` (derived from the URL you entered).
     5. Registers via `claude mcp add --scope user --env KEY=VAL ... -- <launcher> <pkg>`.
+
+  • cookie_paste  (LinkedIn — Voyager via session cookies)
+
+  • entra_login  (Azure DevOps via Microsoft @azure-devops/mcp)
+    1. Prompts for organisation name + auth method (interactive Entra / azcli / pat / envvar).
+    2. If pat/envvar, prompts for the secret env var; otherwise auth happens at first tool call.
+    3. Prompts for optional tenant + optional domain restriction.
+    4. Registers via `claude mcp add … -- npx -y @azure-devops/mcp <org> [flags]`.
 
 All persistent state (oauth keys + tokens + env files) lives under ./state/<svc>/<slug>/
 so the whole toolkit stays portable. The repo's .gitignore excludes ./state/.
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -85,6 +97,27 @@ def host_from_url(url):
     netloc = netloc.split(":")[0]
     slug = re.sub(r"[^A-Za-z0-9]+", "-", netloc).strip("-").lower()
     return slug or "host"
+
+
+def ado_org_from_url(url):
+    """Extract the Azure DevOps organisation slug from an org URL.
+
+    Handles both modern (https://dev.azure.com/<org>) and legacy
+    (https://<org>.visualstudio.com) shapes. Returns None if the URL
+    doesn't look like Azure DevOps — caller falls back to host_from_url.
+    """
+    try:
+        p = urlparse(url)
+    except Exception:
+        return None
+    host = (p.netloc or "").lower().split(":")[0]
+    if host == "dev.azure.com" or host.endswith(".dev.azure.com"):
+        first = p.path.strip("/").split("/", 1)[0] if p.path else ""
+        return slugify(first) if first else None
+    if host.endswith(".visualstudio.com"):
+        sub = host[: -len(".visualstudio.com")]
+        return slugify(sub) if sub else None
+    return None
 
 
 def _gmail_test(svc):
@@ -222,6 +255,151 @@ SERVICES = {
             },
         ],
     },
+    # ── LinkedIn (cookie_paste) — local vendor under vendor/linkedin-mcp ──
+    "linkedin": {
+        "provider": "linkedin",
+        "launcher": "uv_local",
+        "auth_kind": "cookie_paste",
+        "label": "LinkedIn",
+        "short": "LinkedIn",
+        "service_name": "LinkedIn",
+        "local_pkg_dir": "vendor/linkedin-mcp",
+        "local_pkg_console_script": "linkedin-mcp",
+        "scopes_note": (
+            "Cookie-based access against LinkedIn's Voyager mobile API.\n"
+            "Cookies needed: li_at (session cookie, ~120 chars) and JSESSIONID\n"
+            "(CSRF cookie, looks like 'ajax:NNNNNNNNNNNNNNNN'). Rotate every\n"
+            "~90 days or whenever you log out / change password.\n"
+            "Source pin: vendor/linkedin-mcp v0.1.0 (this toolkit)"
+        ),
+        "env_vars": [
+            {
+                "name": "LINKEDIN_LI_AT",
+                "required": True,
+                "validator": "li_at",
+                "description": (
+                    "li_at cookie value. In Chrome: F12 → Application → Cookies → "
+                    "https://www.linkedin.com → li_at → Value. Paste the value only, "
+                    "no surrounding quotes."
+                ),
+                "secret": True,
+            },
+            {
+                "name": "LINKEDIN_JSESSIONID",
+                "required": True,
+                "validator": "jsessionid",
+                "description": (
+                    "JSESSIONID cookie value. Same place in DevTools. Typically "
+                    "looks like 'ajax:NNNNNNNNNNNNNNNN'. Paste without surrounding quotes."
+                ),
+                "secret": True,
+            },
+            {
+                "name": "LINKEDIN_ACCOUNT_LABEL",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": (
+                    "Free-text label that appears in server logs (e.g. 'minaalfy'). "
+                    "Defaults to the title slug if blank."
+                ),
+            },
+            {
+                "name": "LINKEDIN_TIMEZONE",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": (
+                    "IANA timezone used by throttle/working-hours gate "
+                    "(default: Europe/Berlin)."
+                ),
+            },
+            {
+                "name": "LINKEDIN_WORKING_HOURS_START",
+                "required": False,
+                "validator": "int_or_empty",
+                "description": "Hour (0-23) engagement actions become allowed (default: 9).",
+            },
+            {
+                "name": "LINKEDIN_WORKING_HOURS_END",
+                "required": False,
+                "validator": "int_or_empty",
+                "description": "Hour (0-23) engagement actions become blocked (default: 19).",
+            },
+        ],
+    },
+    # ── Azure DevOps (Microsoft official) via @azure-devops/mcp (entra_login) ──
+    "azure-devops": {
+        "provider": "azure-devops",
+        "launcher": "npx",
+        "auth_kind": "entra_login",
+        "label": "Azure DevOps (Microsoft official)",
+        "short": "AzureDevOps",
+        "service_name": "AzureDevOps",
+        "npx_package": "@azure-devops/mcp",
+        "scopes_note": (
+            "Auth options exposed by @azure-devops/mcp:\n"
+            "  • interactive (default) — opens an Entra browser flow on first tool call\n"
+            "  • azcli                  — uses your local `az login` session (no PAT)\n"
+            "  • pat                    — reads PERSONAL_ACCESS_TOKEN env (base64 'email:token')\n"
+            "  • envvar                 — reads ADO_MCP_AUTH_TOKEN env (raw bearer token)\n"
+            "  • env                    — Azure SDK env-credential chain (advanced)\n"
+            "Source pin: vendor/azure-devops-mcp @ bb008b1 (v2.7.0)\n"
+            "  src/index.ts:32-37    (organisation positional arg)\n"
+            "  src/index.ts:39-44    (--domains, default 'all')\n"
+            "  src/index.ts:46-52    (--authentication choices)\n"
+            "  src/index.ts:53-57    (--tenant)\n"
+            "  src/auth.ts:80-93     (pat → PERSONAL_ACCESS_TOKEN)\n"
+            "  src/auth.ts:95-107    (envvar → ADO_MCP_AUTH_TOKEN)\n"
+            "  src/auth.ts:109-129   (azcli/env → DefaultAzureCredential)"
+        ),
+    },
+    # ── Azure DevOps (Tiberriver256 PAT fallback) via api_token ─────────────
+    "azure-devops-tiberriver": {
+        "provider": "azure-devops",
+        "launcher": "npx",
+        "auth_kind": "api_token",
+        "label": "Azure DevOps (Tiberriver256 — PAT fallback)",
+        "short": "AzureDevOps",
+        "service_name": "AzureDevOps",
+        "npx_package": "@tiberriver256/mcp-server-azure-devops",
+        "title_source_env": "AZURE_DEVOPS_ORG_URL",
+        "title_source_kind": "ado_org_from_url",
+        "pat_setup_url": "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate",
+        "scopes_note": (
+            "Uses an Azure DevOps Personal Access Token tied to your Microsoft account.\n"
+            "Recommended PAT scopes (least-privilege starter): Code (read),\n"
+            "Work Items (read & write), Build (read). Tighten per use-case.\n"
+            "Source pin: vendor/azure-devops-mcp-tiberriver @ 7ad868b (v0.1.45)\n"
+            "  src/index.ts:55-67  (AZURE_DEVOPS_ORG_URL / AUTH_METHOD / PAT / DEFAULT_PROJECT read)"
+        ),
+        "env_vars": [
+            {
+                "name": "AZURE_DEVOPS_ORG_URL",
+                "required": True,
+                "validator": "url",
+                "description": "Your Azure DevOps organisation URL (e.g. https://dev.azure.com/<org>)",
+            },
+            {
+                "name": "AZURE_DEVOPS_AUTH_METHOD",
+                "required": True,
+                "default": "pat",
+                "validator": "nonempty",
+                "description": "Auth method: 'pat' (recommended) / 'azure-identity' / 'azure-cli'. If you pick a non-pat method, you'll still be prompted for AZURE_DEVOPS_PAT — leave it blank.",
+            },
+            {
+                "name": "AZURE_DEVOPS_PAT",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": "Azure DevOps PAT (User settings → Personal access tokens → New token). Required when AUTH_METHOD=pat; otherwise leave blank.",
+                "secret": True,
+            },
+            {
+                "name": "AZURE_DEVOPS_DEFAULT_PROJECT",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": "Optional default project. Saves having to specify the project arg on each tool call.",
+            },
+        ],
+    },
     # ── Tempo (Jira DC time tracking) via tranzact/tempo-filler (api_token) ──
     "tempo-filler": {
         "provider": "tempo",
@@ -341,12 +519,32 @@ def _v_int_or_empty(value):
     return (value.isdigit(), "expected an integer (or leave blank)")
 
 
+def _v_li_at(value):
+    v = value.strip().strip('"').strip("'")
+    if len(v) < 80:
+        return False, "li_at cookies are usually ~120+ characters; this looks too short"
+    if " " in v or "\n" in v:
+        return False, "li_at cannot contain spaces or newlines — paste the value only"
+    return True, None
+
+
+def _v_jsessionid(value):
+    v = value.strip().strip('"').strip("'")
+    if not v.startswith("ajax:"):
+        return False, "JSESSIONID usually starts with 'ajax:' — make sure you copied the whole value"
+    if " " in v:
+        return False, "JSESSIONID cannot contain spaces"
+    return True, None
+
+
 VALIDATORS = {
     "url": _v_url,
     "url_or_empty": _v_url_or_empty,
     "nonempty": _v_nonempty,
     "nonempty_or_empty": _v_nonempty_or_empty,
     "int_or_empty": _v_int_or_empty,
+    "li_at": _v_li_at,
+    "jsessionid": _v_jsessionid,
 }
 
 
@@ -551,7 +749,7 @@ def test_connection(service_key, token_path):
 # Claude Code registration
 # ──────────────────────────────────────────────────────────────────────────────
 
-def claude_mcp_add(title, launcher, package, env_pairs, step_num=6):
+def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=None, console_script=None, extra_args=None):
     cmd = ["claude", "mcp", "add", "--scope", "user", title]
     for k, v in env_pairs.items():
         if v == "":
@@ -562,9 +760,23 @@ def claude_mcp_add(title, launcher, package, env_pairs, step_num=6):
         cmd += ["npx", "-y", package]
     elif launcher == "uvx":
         cmd += ["uvx", package]
+    elif launcher == "uv_local":
+        # Run from a local source tree via uv. The directory must be a Python
+        # project with a [project.scripts] entry matching console_script, OR
+        # provide a module via -m.
+        if not local_dir:
+            print("  ✗ uv_local launcher requires local_dir")
+            return False
+        cmd += ["uv", "run", "--directory", str(local_dir)]
+        if console_script:
+            cmd += [console_script]
+        else:
+            cmd += ["python", "-m", package]
     else:
         print(f"  ✗ Unknown launcher: {launcher}")
         return False
+    if extra_args:
+        cmd += list(extra_args)
     step(step_num, f"Registering with Claude Code as '{title}'")
     print("  command:")
     redacted = []
@@ -727,6 +939,7 @@ def _setup_api_token(service_key, s):
         print(f"    {spec['description']}")
         v = prompt(
             name,
+            default=spec.get("default"),
             validator=validator,
             allow_empty=not required,
             secret=spec.get("secret", False),
@@ -743,8 +956,14 @@ def _setup_api_token(service_key, s):
     print("  Note: claude mcp names accept letters, numbers, hyphens, and underscores only.")
     source_env = s.get("title_source_env")
     source_value = values.get(source_env, "") if source_env else ""
-    host_slug = host_from_url(source_value) if source_value else "host"
-    print(f"  Default is <host-slug>-{s['service_name']} (e.g. {host_slug}-{s['service_name']}).")
+    title_kind = s.get("title_source_kind")
+    if source_value and title_kind == "ado_org_from_url":
+        host_slug = ado_org_from_url(source_value) or host_from_url(source_value)
+    elif source_value:
+        host_slug = host_from_url(source_value)
+    else:
+        host_slug = "host"
+    print(f"  Default is <slug>-{s['service_name']} (e.g. {host_slug}-{s['service_name']}).")
     default_title = f"{host_slug}-{s['service_name']}"
     title = prompt("Title", default=default_title, validator=validate_mcp_name)
 
@@ -790,6 +1009,499 @@ def _setup_api_token(service_key, s):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Setup — cookie_paste branch (LinkedIn)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _setup_cookie_paste(service_key, s):
+    local_dir = (REPO_ROOT / s["local_pkg_dir"]).resolve()
+    if not local_dir.exists():
+        print(f"  ✗ Local package directory not found: {local_dir}")
+        return 1
+
+    step(1, f"Grab your LinkedIn session cookies for {s['label']}")
+    print("""
+  Open LinkedIn in your browser and sign in normally (with 2FA if you use it).
+  Then extract two cookies via DevTools:
+
+    Chrome / Edge:
+      1. Press F12 (DevTools)
+      2. Application tab → Storage → Cookies → https://www.linkedin.com
+      3. Copy the 'Value' column for these two rows:
+           • li_at          (long random string, ~120+ chars)
+           • JSESSIONID     (looks like 'ajax:1234567890123456')
+      4. Paste each value at the prompts below.
+
+    Firefox:
+      1. Press F12 → Storage tab → Cookies → https://www.linkedin.com
+      2. Copy 'Value' for li_at and JSESSIONID.
+
+  Notes:
+   - Paste the VALUE only, no surrounding quotes.
+   - Cookies last ~90 days unless you log out / change password.
+   - If you ever rotate, re-run this script with the same title to update.
+   - Treat li_at like a password — anyone with it can post as you.
+
+  ⚠ Account-safety reminder: this MCP throttles itself (daily caps + working
+     hours), but unofficial API use against LinkedIn can still get an account
+     restricted. With your eAT job-hunt active, don't run engagement actions
+     in bulk — the read tools (jobs, profiles, feed, inbox) are much safer.
+""")
+    input("  Press Enter once you have both cookies ready… ")
+
+    step(2, "Enter the cookies + optional config")
+    values = {}
+    for spec in s["env_vars"]:
+        name = spec["name"]
+        required = spec.get("required", False)
+        validator = VALIDATORS.get(spec.get("validator", "nonempty"))
+        marker = "" if required else "  (optional, leave blank for default)"
+        print(f"\n  {name}{marker}")
+        print(f"    {spec['description']}")
+        v = prompt(
+            name,
+            validator=validator,
+            allow_empty=not required,
+            secret=spec.get("secret", False),
+        )
+        values[name] = (v or "").strip().strip('"').strip("'")
+
+    # Stage state dir with a pending slug
+    tmp_slug = "_pending"
+    state_dir = make_state_dir(service_key, tmp_slug)
+    env_path = state_dir / "env"
+    write_env_file(env_path, values)
+    print(f"\n  ✓ env file staged at {env_path} (mode 600)")
+
+    step(3, "Connection test — call get_user_profile() with the pasted cookies")
+    ping_env = os.environ.copy()
+    ping_env.update({k: v for k, v in values.items() if v})
+    ping_env["LINKEDIN_STATE_DIR"] = str(state_dir)
+    ping_cmd = ["uv", "run", "--directory", str(local_dir), "python", "-m", "linkedin_mcp.ping"]
+    try:
+        result = subprocess.run(
+            ping_cmd, env=ping_env, capture_output=True, text=True, timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        print("  ✗ Ping timed out after 120s. Check your network + cookie values.")
+        return 1
+    except FileNotFoundError:
+        print("  ✗ `uv` not found on PATH. Install uv (https://docs.astral.sh/uv/) and re-run.")
+        return 1
+    if result.returncode != 0:
+        print(f"  ✗ Ping failed (exit {result.returncode}).")
+        if result.stderr.strip():
+            print("    stderr:")
+            for line in result.stderr.strip().splitlines():
+                print(f"      {line}")
+        if "AUTH-FAILED" in (result.stderr or ""):
+            print("    → li_at is invalid / expired. Re-copy from DevTools and retry.")
+        return 1
+    try:
+        identity = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        print(f"  ⚠ ping returned non-JSON: {result.stdout!r}")
+        identity = {}
+    name = " ".join(filter(None, [identity.get("first_name"), identity.get("last_name")])) or "(unknown)"
+    print(f"  ✓ Connected as: {name}")
+    if identity.get("headline"):
+        print(f"    Headline: {identity['headline']}")
+
+    step(4, "Pick a title for this MCP server in Claude Code")
+    print("  Note: claude mcp names accept letters, numbers, hyphens, and underscores only.")
+    default_label = values.get("LINKEDIN_ACCOUNT_LABEL") or slugify(name) or "linkedin"
+    default_title = f"{default_label}-{s['service_name']}"
+    title = prompt("Title", default=default_title, validator=validate_mcp_name)
+
+    final_slug = slugify(title)
+    final_dir = STATE_ROOT / service_key / final_slug
+    replacing = final_dir.exists() and final_dir != state_dir
+    if replacing:
+        print(f"  ⓘ State dir already exists for slug '{final_slug}': {final_dir}")
+        if not confirm("Replace existing state with the freshly entered cookie?", default=True):
+            print("     Pick a different title or remove the existing state dir first.")
+            return 1
+        shutil.rmtree(final_dir)
+        print(f"  ✓ removed old state dir")
+    if final_dir != state_dir:
+        state_dir.rename(final_dir)
+        env_path = final_dir / "env"
+        print(f"  ✓ state moved to {final_dir}")
+
+    # The server needs LINKEDIN_STATE_DIR pointing at its final dir so the
+    # throttle counter file + playwright profile dir resolve correctly.
+    if not values.get("LINKEDIN_ACCOUNT_LABEL"):
+        values["LINKEDIN_ACCOUNT_LABEL"] = default_label
+    env_pairs = dict(values)
+    env_pairs["LINKEDIN_STATE_DIR"] = str(final_dir)
+
+    if replacing:
+        subprocess.run(
+            ["claude", "mcp", "remove", "--scope", "user", title],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    ok = claude_mcp_add(
+        title=title,
+        launcher=s["launcher"],
+        package=s["local_pkg_dir"],
+        env_pairs=env_pairs,
+        local_dir=local_dir,
+        console_script=s.get("local_pkg_console_script"),
+    )
+    if not ok:
+        return 1
+
+    hr("═")
+    print(f"  ✓ Done. '{title}' is registered.")
+    print(f"    State:  {final_dir}")
+    print(f"    Restart your Claude Code session to load tools.")
+    print(f"    Rotate cookies later by re-running this command with the same title.")
+    hr("═")
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Setup — entra_login branch (Azure DevOps via Microsoft @azure-devops/mcp)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_ADO_ORG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_TENANT_RE = re.compile(r"^[0-9a-fA-F-]{1,64}$")
+_B64_RE = re.compile(r"^[A-Za-z0-9+/=]+$")
+_ADO_SCOPE = "499b84ac-1321-427f-aa17-267ca6975798/.default"
+
+
+def _ado_probe_creds(org, auth_header_value, timeout=15):
+    """Probe https://dev.azure.com/<org>/_apis/projects with the given Authorization
+    header value (full header value — caller decides 'Basic <b64>' vs 'Bearer <token>').
+
+    Returns (ok: bool, message: str). Distinguishes:
+      • 200 + JSON  → ok, includes project count
+      • 401         → invalid / expired / wrong-org PAT
+      • 203 / HTML  → unauthenticated redirect to sign-in
+      • 404         → org doesn't exist (typo)
+      • network err → toolkit can't reach ADO from this machine
+    """
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+
+    url = f"https://dev.azure.com/{org}/_apis/projects?api-version=7.1-preview.4&$top=1"
+    req = Request(url, headers={"Authorization": auth_header_value, "Accept": "application/json"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            body = resp.read()
+            if resp.status == 200 and "application/json" in ct:
+                try:
+                    data = json.loads(body)
+                    count = data.get("count", 0)
+                    return True, f"PAT works — {count} project(s) visible in '{org}'"
+                except Exception:
+                    return False, "200 OK but body wasn't JSON — unexpected ADO response"
+            if "text/html" in ct or resp.status in (203, 302, 303):
+                return False, (
+                    f"ADO returned HTTP {resp.status} with a sign-in redirect — "
+                    "credentials were rejected (often: PAT belongs to a different org, "
+                    "or the org name is wrong)"
+                )
+            return False, f"Unexpected HTTP {resp.status} (content-type {ct})"
+    except HTTPError as e:
+        if e.code == 401:
+            return False, "401 Unauthorized — PAT is invalid, expired, or has no access to this org"
+        if e.code == 403:
+            return False, "403 Forbidden — PAT scope is too narrow (need at least 'Project and team: Read')"
+        if e.code == 404:
+            return False, f"404 Not Found — org '{org}' doesn't exist or you have no access"
+        return False, f"HTTP {e.code} — {e.reason}"
+    except URLError as e:
+        return False, f"Network error reaching {url}: {e.reason}"
+    except Exception as e:
+        return False, f"Unexpected error: {e}"
+
+
+def _ado_collect_and_encode_pat(org, cached_email_default):
+    """Prompt for email + raw PAT separately, base64('email:token') for the user.
+    Returns (pat_b64, email)."""
+    print()
+    print("  Where to create the PAT:")
+    print(f"    https://dev.azure.com/{org}/_usersSettings/tokens")
+    print()
+    print("  Scopes — for setup-time verification you need AT LEAST:")
+    print("    • Project and team: Read")
+    print("  Add the others you'll actually use (commonly):")
+    print("    • Code: Read & write    • Work items: Read & write")
+    print("    • Build: Read           • Wiki: Read & write")
+    print("    • Identity: Read        • Test management: Read")
+    print()
+    print("  Expiry — pick a date you're comfortable rotating (90 days is a reasonable default).")
+    print("  This script will base64-encode 'email:PAT' for you — paste them separately below.")
+    print()
+    email = prompt(
+        "Microsoft account email (the one that owns the PAT)",
+        default=cached_email_default,
+        validator=lambda v: (EMAIL_RE.match(v) is not None, "doesn't look like an email"),
+    )
+    raw_pat = prompt(
+        "Raw PAT (paste the value as shown right after creation — no encoding)",
+        validator=lambda v: (len(v.strip()) >= 30, "ADO PATs are typically 52+ chars; that looks too short"),
+        secret=True,
+    )
+    raw_pat = raw_pat.strip()
+    pat_b64 = base64.b64encode(f"{email}:{raw_pat}".encode("utf-8")).decode("ascii")
+    return pat_b64, email
+
+
+def _setup_entra_login(service_key, s):
+    step(1, f"{s['label']} — find your organisation name")
+    print("""
+  Azure DevOps URLs look like:  https://dev.azure.com/<organisation>
+  Your <organisation> is the trailing path segment, used as a positional CLI
+  arg to the MCP server. The vendor has no 'list organisations' tool — the
+  org is fixed at setup time.
+
+  If you don't remember which orgs your account belongs to, visit:
+    https://aex.dev.azure.com/
+  (signed-in landing page that lists every Azure DevOps org tied to your
+   Microsoft account, with direct dev.azure.com links).
+""")
+    org = prompt(
+        "Organisation name (the trailing segment after dev.azure.com/)",
+        validator=lambda v: (
+            bool(_ADO_ORG_RE.match(v)),
+            "expected an ADO org slug (letters/digits/._-, ≤64 chars)",
+        ),
+    )
+
+    step(2, "Pick the auth method")
+    print("""
+    pat          PAT in PERSONAL_ACCESS_TOKEN env — VALIDATED at setup    [recommended]
+    azcli        local `az login` session — VALIDATED at setup
+    envvar       raw bearer token in ADO_MCP_AUTH_TOKEN env — VALIDATED at setup
+    interactive  Entra browser flow on the FIRST TOOL CALL (not at setup)
+    env          Azure SDK env-credential chain — NOT validated (advanced)
+
+  PAT is the default because it's self-contained (no browser, no az CLI), the
+  toolkit can verify it during setup, and rotation is a re-run of this script.
+""")
+    auth_method = prompt(
+        "Auth method",
+        default="pat",
+        validator=lambda v: (
+            v in ("interactive", "azcli", "pat", "envvar", "env"),
+            "expected one of: pat, azcli, envvar, interactive, env",
+        ),
+    )
+
+    step(3, "Tenant + domain scoping (both optional)")
+    tenant = prompt(
+        "Azure tenant ID — UUID, used with interactive/azcli for multi-tenant accounts (blank = common)",
+        allow_empty=True,
+        validator=lambda v: (
+            not v or bool(_TENANT_RE.match(v)),
+            "expected a tenant UUID or leave blank",
+        ),
+    )
+    print()
+    print("  Domains restrict which tool groups are loaded (smaller = less noise in tool picker).")
+    print("  'all' (default) loads everything; or space-separate e.g. 'repositories work-items'.")
+    domains_input = prompt("Domains to enable", default="all")
+
+    env_pairs = {}
+
+    # ── Auth-method-specific collection + LIVE VALIDATION ──────────────────
+    if auth_method == "pat":
+        step(4, "Personal Access Token — collect + validate against Azure DevOps")
+        pat_b64, email = _ado_collect_and_encode_pat(org, load_cached_email())
+        print()
+        print(f"  Probing https://dev.azure.com/{org}/_apis/projects to verify the PAT…")
+        ok, msg = _ado_probe_creds(org, f"Basic {pat_b64}")
+        if not ok:
+            print(f"  ✗ {msg}")
+            print()
+            print("  Common causes & fixes:")
+            print("   • Wrong org name → re-run, double-check at https://aex.dev.azure.com/")
+            print("   • PAT belongs to a different Microsoft account → sign in as that account when creating it")
+            print("   • PAT expired or revoked → create a new one (link printed above)")
+            print("   • Missing scope → tick at least 'Project and team: Read' on the PAT")
+            print("   • Corporate AAD policy blocks PAT use → switch to 'azcli' auth method")
+            return 1
+        print(f"  ✓ {msg}")
+        save_cached_email(email)
+        env_pairs["PERSONAL_ACCESS_TOKEN"] = pat_b64
+
+    elif auth_method == "envvar":
+        step(4, "Bearer token — collect + validate against Azure DevOps")
+        print("""
+  ADO_MCP_AUTH_TOKEN expects a RAW bearer token for the Azure DevOps resource
+  (audience 499b84ac-1321-427f-aa17-267ca6975798). Get one from your IdP /
+  service principal — this is the advanced path; most users want 'pat' or 'azcli'.
+""")
+        token = prompt(
+            "ADO_MCP_AUTH_TOKEN (raw bearer)",
+            validator=VALIDATORS["nonempty"],
+            secret=True,
+        )
+        print()
+        print(f"  Probing https://dev.azure.com/{org}/_apis/projects with this bearer…")
+        ok, msg = _ado_probe_creds(org, f"Bearer {token}")
+        if not ok:
+            print(f"  ✗ {msg}")
+            print("    Verify the token is freshly issued for the ADO audience and not expired.")
+            return 1
+        print(f"  ✓ {msg}")
+        env_pairs["ADO_MCP_AUTH_TOKEN"] = token
+
+    elif auth_method == "azcli":
+        step(4, "Azure CLI — check installation, login state, fetch token, validate")
+        if not shutil.which("az"):
+            print("  ✗ `az` CLI not found on PATH.")
+            print("    Install: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli")
+            print("    Then re-run this setup.")
+            return 1
+        account = subprocess.run(["az", "account", "show", "-o", "json"], capture_output=True, text=True)
+        if account.returncode != 0:
+            print("  ⓘ You're not signed in to `az` yet.")
+            login_cmd = ["az", "login"]
+            if tenant:
+                login_cmd += ["--tenant", tenant]
+            print(f"    Running: {' '.join(login_cmd)}")
+            login = subprocess.run(login_cmd)
+            if login.returncode != 0:
+                print("  ✗ `az login` failed. Sign in manually and re-run.")
+                return 1
+            account = subprocess.run(["az", "account", "show", "-o", "json"], capture_output=True, text=True)
+            if account.returncode != 0:
+                print("  ✗ Still not signed in after `az login`. Aborting.")
+                return 1
+        try:
+            account_info = json.loads(account.stdout or "{}")
+            signed_in_as = account_info.get("user", {}).get("name", "(unknown)")
+            current_tenant = account_info.get("tenantId", "(unknown)")
+            print(f"  ✓ Signed in as {signed_in_as} (tenant {current_tenant})")
+        except Exception:
+            pass
+        token_cmd = ["az", "account", "get-access-token", "--resource", _ADO_SCOPE.split("/")[0], "-o", "json"]
+        if tenant:
+            token_cmd += ["--tenant", tenant]
+        tok = subprocess.run(token_cmd, capture_output=True, text=True)
+        if tok.returncode != 0:
+            print(f"  ✗ Couldn't fetch an ADO-scoped token via az: {tok.stderr.strip()}")
+            return 1
+        try:
+            bearer = json.loads(tok.stdout)["accessToken"]
+        except Exception as e:
+            print(f"  ✗ Couldn't parse `az account get-access-token` output: {e}")
+            return 1
+        print(f"  Probing https://dev.azure.com/{org}/_apis/projects with the az-issued bearer…")
+        ok, msg = _ado_probe_creds(org, f"Bearer {bearer}")
+        if not ok:
+            print(f"  ✗ {msg}")
+            print("    Your az session works but doesn't authorise this ADO org.")
+            print("    Confirm the org name + that your sign-in account has access at https://aex.dev.azure.com/")
+            return 1
+        print(f"  ✓ {msg}")
+        # No env vars to set — vendor will re-fetch the token via DefaultAzureCredential at runtime.
+
+    elif auth_method == "interactive":
+        step(4, "Interactive Entra — heads-up about deferred auth")
+        print("""
+  ⚠ The 'interactive' method does NOT authenticate during setup. The Entra
+     browser flow opens the FIRST TIME a tool is called, with the MCP server
+     running inside Claude Code's stdio sandbox. In practice:
+        • If your desktop has a default browser and isn't sandboxed (snap /
+          flatpak), the tab opens and you sign in once. Subsequent tool calls
+          re-use the MSAL token cache.
+        • If you're inside a snap-confined editor (e.g. snap VS Code) the
+          browser-open silently fails and the tool call hangs.
+
+  Strongly recommended: cancel and choose 'pat' or 'azcli' (both validated now).
+""")
+        if not confirm("Stick with interactive anyway?", default=False):
+            print("  Aborted. Re-run and pick 'pat' or 'azcli'.")
+            return 1
+
+    elif auth_method == "env":
+        step(4, "Azure SDK env-credential chain — no validation possible")
+        print("""
+  The vendor delegates to DefaultAzureCredential, which walks the env-credential
+  chain (AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET, plus managed
+  identity, workload identity, etc.). The toolkit can't validate this combo
+  without inspecting your env, so we proceed without a probe — be ready to debug
+  via the vendor's stderr if the first tool call fails.
+""")
+        if not confirm("Proceed without validation?", default=False):
+            print("  Aborted.")
+            return 1
+
+    # ── Stage state, pick title, register ──────────────────────────────────
+    tmp_slug = "_pending"
+    state_dir = make_state_dir(service_key, tmp_slug)
+    env_path = state_dir / "env"
+    write_env_file(env_path, env_pairs)
+    if env_pairs:
+        print(f"\n  ✓ env file staged at {env_path} (mode 600)")
+
+    step(5, "Pick a title for this MCP server in Claude Code")
+    print("  Note: claude mcp names accept letters, numbers, hyphens, underscores only.")
+    org_slug = slugify(org)
+    default_title = f"{org_slug}-{s['service_name']}"
+    title = prompt("Title", default=default_title, validator=validate_mcp_name)
+
+    final_slug = slugify(title)
+    final_dir = STATE_ROOT / service_key / final_slug
+    replacing = final_dir.exists() and final_dir != state_dir
+    if replacing:
+        print(f"  ⓘ State dir already exists for slug '{final_slug}': {final_dir}")
+        if not confirm("Replace existing state?", default=True):
+            print("     Pick a different title or remove the existing state dir first.")
+            return 1
+        shutil.rmtree(final_dir)
+        print(f"  ✓ removed old state dir")
+    if final_dir != state_dir:
+        state_dir.rename(final_dir)
+        env_path = final_dir / "env"
+        print(f"  ✓ state moved to {final_dir}")
+
+    extra_args = [org]
+    if domains_input and domains_input != "all":
+        extra_args += ["-d"] + domains_input.split()
+    extra_args += ["--authentication", auth_method]
+    if tenant:
+        extra_args += ["--tenant", tenant]
+
+    if replacing:
+        subprocess.run(
+            ["claude", "mcp", "remove", "--scope", "user", title],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    ok = claude_mcp_add(
+        title=title,
+        launcher=s["launcher"],
+        package=s["npx_package"],
+        env_pairs=env_pairs,
+        extra_args=extra_args,
+        step_num=6,
+    )
+    if not ok:
+        return 1
+
+    hr("═")
+    print(f"  ✓ Done. '{title}' is registered and credentials are verified.")
+    print(f"    State:  {final_dir}")
+    if auth_method == "interactive":
+        print("    ⚠ The vendor will open an Entra browser tab on the first tool call.")
+    elif auth_method == "azcli":
+        print("    ⓘ Vendor re-fetches a token via your `az` session on every start.")
+        print("       If `az` later logs out, the MCP server will fail until you `az login` again.")
+    elif auth_method == "pat":
+        print("    ⓘ Rotate the PAT later by re-running this command with the same title.")
+    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    hr("═")
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Top-level service setup
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -808,6 +1520,10 @@ def cmd_setup(service_key):
         return _setup_oauth_browser(service_key, s)
     if s["auth_kind"] == "api_token":
         return _setup_api_token(service_key, s)
+    if s["auth_kind"] == "cookie_paste":
+        return _setup_cookie_paste(service_key, s)
+    if s["auth_kind"] == "entra_login":
+        return _setup_entra_login(service_key, s)
     print(f"unknown auth_kind '{s['auth_kind']}' for service '{service_key}'")
     return 2
 
@@ -852,12 +1568,13 @@ def cmd_doctor():
 def main():
     ap = argparse.ArgumentParser(
         prog="setup-mcp.py",
-        description="Set up MCP servers (Google + Atlassian + Tempo) for Claude Code.",
+        description="Set up MCP servers (Google, Atlassian, Tempo, LinkedIn, Azure DevOps) for Claude Code.",
     )
     sub = ap.add_subparsers(dest="service", required=True)
     for key, cfg in SERVICES.items():
         sub.add_parser(key, help=f"Set up the {cfg['label']} MCP server.")
     sub.add_parser("doctor", help="List registered servers and their local state.")
+    # alias: `linkedin` works as a positional even though the dict key matches.
     args = ap.parse_args()
     if args.service == "doctor":
         return cmd_doctor()

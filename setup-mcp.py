@@ -348,14 +348,14 @@ SERVICES = {
             "  • pat                    — reads PERSONAL_ACCESS_TOKEN env (base64 'email:token')\n"
             "  • envvar                 — reads ADO_MCP_AUTH_TOKEN env (raw bearer token)\n"
             "  • env                    — Azure SDK env-credential chain (advanced)\n"
-            "Source pin: vendor/azure-devops-mcp @ bb008b1 (v2.7.0)\n"
-            "  src/index.ts:32-37    (organisation positional arg)\n"
-            "  src/index.ts:39-44    (--domains, default 'all')\n"
+            "Source pin: vendor/azure-devops-mcp @ 1cd5d89 (v2.7.0 + 34 commits)\n"
+            "  src/index.ts:32-39    (organisation positional arg)\n"
+            "  src/index.ts:39-45    (--domains, default 'all')\n"
             "  src/index.ts:46-52    (--authentication choices)\n"
-            "  src/index.ts:53-57    (--tenant)\n"
-            "  src/auth.ts:80-93     (pat → PERSONAL_ACCESS_TOKEN)\n"
-            "  src/auth.ts:95-107    (envvar → ADO_MCP_AUTH_TOKEN)\n"
-            "  src/auth.ts:109-129   (azcli/env → DefaultAzureCredential)"
+            "  src/index.ts:53-56    (--tenant)\n"
+            "  src/auth.ts:81-94     (pat → PERSONAL_ACCESS_TOKEN)\n"
+            "  src/auth.ts:95-108    (envvar → ADO_MCP_AUTH_TOKEN)\n"
+            "  src/auth.ts:109-130   (azcli/env → DefaultAzureCredential)"
         ),
     },
     # ── Azure DevOps (Tiberriver256 PAT fallback) via api_token ─────────────

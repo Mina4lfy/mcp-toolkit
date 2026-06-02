@@ -227,13 +227,13 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - `vendor/mcp-atlassian/src/mcp_atlassian/utils/environment.py:109,148` — PAT-env routing for both apps
 - **Tempo (tranzact/tempo-filler)** @ `b9db692` (v2.0.2):
   - `vendor/tempo-filler-mcp-server/src/index.ts:51-53` — `TEMPO_BASE_URL` / `TEMPO_PAT` / `TEMPO_DEFAULT_HOURS` are read here
-- **Azure DevOps (microsoft/azure-devops-mcp)** @ `bb008b1` (v2.7.0):
-  - `vendor/azure-devops-mcp/src/index.ts:32-37` — `<organization>` positional CLI arg
-  - `vendor/azure-devops-mcp/src/index.ts:39-44` — `--domains` flag, default `'all'`
+- **Azure DevOps (microsoft/azure-devops-mcp)** @ `1cd5d89` (v2.7.0 + 34 commits):
+  - `vendor/azure-devops-mcp/src/index.ts:32-39` — `<organization>` positional CLI arg
+  - `vendor/azure-devops-mcp/src/index.ts:39-45` — `--domains` flag, default `'all'`
   - `vendor/azure-devops-mcp/src/index.ts:46-52` — `--authentication` flag, choices `interactive` / `azcli` / `env` / `envvar` / `pat`
-  - `vendor/azure-devops-mcp/src/index.ts:53-57` — `--tenant` flag
-  - `vendor/azure-devops-mcp/src/auth.ts:80-93` — `pat` mode reads `PERSONAL_ACCESS_TOKEN` (base64 `email:token`)
-  - `vendor/azure-devops-mcp/src/auth.ts:95-107` — `envvar` mode reads `ADO_MCP_AUTH_TOKEN` (raw bearer)
+  - `vendor/azure-devops-mcp/src/index.ts:53-56` — `--tenant` flag
+  - `vendor/azure-devops-mcp/src/auth.ts:81-94` — `pat` mode reads `PERSONAL_ACCESS_TOKEN` (base64 `email:token`)
+  - `vendor/azure-devops-mcp/src/auth.ts:95-108` — `envvar` mode reads `ADO_MCP_AUTH_TOKEN` (raw bearer)
 - **Azure DevOps (Tiberriver256/mcp-server-azure-devops)** @ `7ad868b` (v0.1.45):
   - `vendor/azure-devops-mcp-tiberriver/src/index.ts:55-67` — `AZURE_DEVOPS_ORG_URL` / `AZURE_DEVOPS_AUTH_METHOD` / `AZURE_DEVOPS_PAT` / `AZURE_DEVOPS_DEFAULT_PROJECT` are read here
 - **GitHub (github/github-mcp-server)** — GitHub-hosted remote server, no vendored submodule to pin. Endpoint + auth verified against GitHub's docs:

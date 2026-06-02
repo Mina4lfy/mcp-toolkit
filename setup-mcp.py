@@ -19,6 +19,7 @@ Usage:
     ./setup-mcp.py azure-devops              # Microsoft official, Entra/azcli/PAT
     ./setup-mcp.py azure-devops-tiberriver   # Community PAT fallback
     ./setup-mcp.py github                    # GitHub official remote server (HTTP + PAT)
+    ./setup-mcp.py gitlab                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
     ./setup-mcp.py linkedin
     ./setup-mcp.py doctor                    # list registered MCPs + their state
 
@@ -34,7 +35,7 @@ Four auth flavours are supported:
     5. Prompts for a server title (defaults to `<email-handle>-<ServiceName>`).
     6. Registers via `claude mcp add --scope user -- npx -y <pkg>`.
 
-  • api_token  (Atlassian DC, Tempo Server, Azure DevOps via Tiberriver256)
+  • api_token  (Atlassian DC, Tempo Server, Azure DevOps via Tiberriver256, GitLab)
     1. Prints where to generate the PAT in your Jira / Azure DevOps profile.
     2. Prompts for each required/optional env var.
     3. Writes `state/<svc>/<slug>/env` (mode 600) for rotation/inspection.
@@ -486,6 +487,93 @@ SERVICES = {
                     "raw token value (starts with 'github_pat_' or 'ghp_')."
                 ),
                 "secret": True,
+            },
+        ],
+    },
+    # ── GitLab via zereight/gitlab-mcp (api_token) ──────────────────────────
+    "gitlab": {
+        "provider": "gitlab",
+        "launcher": "npx",
+        "auth_kind": "api_token",
+        "label": "GitLab (zereight/gitlab-mcp)",
+        "short": "GitLab",
+        "service_name": "GitLab",
+        "npx_package": "@zereight/mcp-gitlab",
+        "title_source_env": "GITLAB_API_URL",
+        "pat_setup_url": "https://docs.gitlab.com/user/profile/personal_access_tokens/",
+        "pat_howto": (
+            "How to create a GitLab Personal Access Token:\n"
+            "    1. Sign in to your GitLab instance in a browser.\n"
+            "    2. SaaS: https://gitlab.com/-/user_settings/personal_access_tokens\n"
+            "       Self-hosted: <your-instance>/-/user_settings/personal_access_tokens\n"
+            "       (or avatar → Edit profile → Access tokens → Personal access tokens).\n"
+            '    3. Name it (e.g. "Claude Code MCP"), set an expiry, and pick scopes:\n'
+            "         • read_api  → read-only access (recommended starter)\n"
+            "         • api       → full read + write (issues, MRs, repo, pipelines)\n"
+            "         • read_repository / write_repository → narrower repo-only access\n"
+            "    4. Click 'Create personal access token' and copy it (shown once)."
+        ),
+        "scopes_note": (
+            "Uses one GitLab Personal Access Token. The token's GitLab scopes decide\n"
+            "what the server can do — pick 'read_api' for read-only or 'api' for full\n"
+            "read+write at token-creation time; this toolkit doesn't pre-select them.\n"
+            "Works against gitlab.com (SaaS) and self-hosted GitLab via GITLAB_API_URL.\n"
+            "Optional flags expose extra tools / lock the server down — leave blank to\n"
+            "accept the vendor defaults (read+write on, no project restriction).\n"
+            "Source pin: vendor/gitlab-mcp @ 74a8c83 (v2.1.18)\n"
+            "  config.ts:32   (GITLAB_PERSONAL_ACCESS_TOKEN read)\n"
+            "  config.ts:42   (GITLAB_READ_ONLY_MODE read)\n"
+            "  index.ts:1545  (GITLAB_API_URL, default https://gitlab.com)\n"
+            "  index.ts:1549  (GITLAB_PROJECT_ID read)\n"
+            "  index.ts:1551  (GITLAB_ALLOWED_PROJECT_IDS read)"
+        ),
+        "env_vars": [
+            {
+                "name": "GITLAB_PERSONAL_ACCESS_TOKEN",
+                "required": True,
+                "validator": "nonempty",
+                "description": (
+                    "GitLab PAT (User settings → Access tokens). Use a 'read_api' "
+                    "token for read-only or 'api' for full read+write."
+                ),
+                "secret": True,
+            },
+            {
+                "name": "GITLAB_API_URL",
+                "required": False,
+                "default": "https://gitlab.com/api/v4",
+                "validator": "url",
+                "description": (
+                    "GitLab API base URL. Default https://gitlab.com/api/v4 (SaaS). "
+                    "For self-hosted use https://gitlab.company.com/api/v4."
+                ),
+            },
+            {
+                "name": "GITLAB_PROJECT_ID",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": (
+                    "Optional default project (numeric ID or 'group/project' path). "
+                    "Saves passing the project on each tool call. Leave blank to skip."
+                ),
+            },
+            {
+                "name": "GITLAB_READ_ONLY_MODE",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": (
+                    "Optional safety switch. Enter 'true' to expose only read-only "
+                    "tools regardless of the token's scopes. Leave blank for read+write."
+                ),
+            },
+            {
+                "name": "GITLAB_ALLOWED_PROJECT_IDS",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": (
+                    "Optional comma-separated allowlist of project IDs the server may "
+                    "touch (e.g. '42,1001'). Leave blank for no restriction."
+                ),
             },
         ],
     },
@@ -1072,14 +1160,17 @@ def _setup_oauth_browser(service_key, s):
 
 def _setup_api_token(service_key, s):
     step(1, f"Generate a Personal Access Token for {s['label']}")
+    howto = s.get("pat_howto") or (
+        'How to create a Jira DC Personal Access Token:\n'
+        '    1. Sign in to your Jira instance in a browser.\n'
+        '    2. Open your profile menu (top-right avatar) → "Personal Access Tokens"\n'
+        '       (Data Center / Server only — Cloud uses API tokens instead).\n'
+        '    3. Click "Create token", give it a name (e.g. "Claude Code MCP"),\n'
+        '       set expiry as your security policy requires, and copy the token.\n'
+        '    4. Paste it below when prompted.'
+    )
     print(f"""
-  How to create a Jira DC Personal Access Token:
-    1. Sign in to your Jira instance in a browser.
-    2. Open your profile menu (top-right avatar) → "Personal Access Tokens"
-       (Data Center / Server only — Cloud uses API tokens instead).
-    3. Click "Create token", give it a name (e.g. "Claude Code MCP"),
-       set expiry as your security policy requires, and copy the token.
-    4. Paste it below when prompted.
+  {howto}
 
   Reference: {s['pat_setup_url']}
 
@@ -2041,7 +2132,7 @@ def cmd_doctor():
 def main():
     ap = argparse.ArgumentParser(
         prog="setup-mcp.py",
-        description="Set up MCP servers (Google, Atlassian, Tempo, LinkedIn, Azure DevOps) for Claude Code.",
+        description="Set up MCP servers (Google, Atlassian, Tempo, LinkedIn, Azure DevOps, GitHub, GitLab) for Claude Code.",
     )
     sub = ap.add_subparsers(dest="service", required=True)
     for key, cfg in SERVICES.items():

@@ -1,10 +1,10 @@
 # mcp-toolkit
 
-Plug-and-play setup for MCP servers inside Claude Code, across six providers: Google (Gmail / Calendar / Drive), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), and GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (the GitHub entry is GitHub-hosted, so it has no submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
+Plug-and-play setup for MCP servers inside Claude Code, across seven providers: Google (Gmail / Calendar / Drive), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (the GitHub entry is GitHub-hosted, so it has no submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
 
 ## What this gives you
 
-Up to six Claude Code MCP servers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example `minaalfykamel@gmail.com - Gmail` and `minaalfy8@gmail.com - Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry).
+Up to seven Claude Code MCP servers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example `minaalfykamel@gmail.com - Gmail` and `minaalfy8@gmail.com - Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry).
 
 | Service | Vendor (cloned in `vendor/`) | Launcher | Auth | Default scopes / env |
 | --- | --- | --- | --- | --- |
@@ -17,6 +17,7 @@ Up to six Claude Code MCP servers — each titled after the account or host that
 | Azure DevOps (Microsoft official) | [`microsoft/azure-devops-mcp`](https://github.com/microsoft/azure-devops-mcp) | npx | PAT (default, validated at setup) / `az login` / Entra browser | positional `<organization>`, flags `--authentication`, `-d`, `--tenant`; PAT modes set `PERSONAL_ACCESS_TOKEN` or `ADO_MCP_AUTH_TOKEN` |
 | Azure DevOps (PAT fallback) | [`Tiberriver256/mcp-server-azure-devops`](https://github.com/Tiberriver256/mcp-server-azure-devops) | npx | Azure DevOps PAT | `AZURE_DEVOPS_ORG_URL`, `AZURE_DEVOPS_AUTH_METHOD`, `AZURE_DEVOPS_PAT`, optional `AZURE_DEVOPS_DEFAULT_PROJECT` |
 | GitHub (official remote) | [`github/github-mcp-server`](https://github.com/github/github-mcp-server) (GitHub-hosted, no local install) | HTTP transport | GitHub PAT | endpoint `https://api.githubcopilot.com/mcp/`, header `Authorization: Bearer <PAT>` |
+| GitLab (SaaS or self-hosted) | [`zereight/gitlab-mcp`](https://github.com/zereight/gitlab-mcp) | npx | GitLab PAT | `GITLAB_PERSONAL_ACCESS_TOKEN`, `GITLAB_API_URL`, optional `GITLAB_PROJECT_ID`, `GITLAB_READ_ONLY_MODE`, `GITLAB_ALLOWED_PROJECT_IDS` |
 
 > **Scope note:** the Atlassian + Tempo entries here target **self-hosted Jira Data Center / Server**. They use a Jira-profile Personal Access Token. They do **not** target Atlassian Cloud — for Cloud, register Atlassian's hosted Rovo MCP server directly (no toolkit support needed since there's no local install).
 >
@@ -42,9 +43,10 @@ Up to six Claude Code MCP servers — each titled after the account or host that
 ./bin/setup-azure-devops.sh               # Microsoft official @azure-devops/mcp
 ./bin/setup-azure-devops-tiberriver.sh    # Tiberriver256 community PAT fallback
 ./bin/setup-github.sh                     # GitHub official remote server (HTTP + PAT)
+./bin/setup-gitlab.sh                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
 ```
 
-The script branches on auth flavour. The Google entries follow `oauth_browser`; the Atlassian + Tempo + Tiberriver256 entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
+The script branches on auth flavour. The Google entries follow `oauth_browser`; the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
 
 ```bash
 ./bin/setup-linkedin.sh     # LinkedIn (Voyager API + Playwright)
@@ -146,6 +148,18 @@ What setup will ask you for, in order:
 
 The PAT is also written to `state/github/<slug>/env` (mode `0600`) for rotation — re-run the setup with the same title to rotate. No Copilot subscription is required for the core GitHub tools.
 
+### GitLab (zereight/gitlab-mcp) — PAT via `api_token`
+
+`./bin/setup-gitlab.sh` registers [`zereight/gitlab-mcp`](https://github.com/zereight/gitlab-mcp) (vendored under `vendor/gitlab-mcp`, launched via the `@zereight/mcp-gitlab` npx package). It follows the same `api_token` flow as Atlassian + Tempo + Tiberriver256, and works against **gitlab.com (SaaS)** and **self-hosted GitLab** — the only difference is the `GITLAB_API_URL` you enter.
+
+1. **Create a GitLab PAT** — avatar → Edit profile → Access tokens → Personal access tokens (SaaS: <https://gitlab.com/-/user_settings/personal_access_tokens>; self-hosted: `<your-instance>/-/user_settings/personal_access_tokens`). Pick scopes at creation time — `read_api` for read-only or `api` for full read+write. The toolkit does **not** pre-select them.
+2. **Enter connection details** — `GITLAB_PERSONAL_ACCESS_TOKEN` (read with `getpass`), `GITLAB_API_URL` (default `https://gitlab.com/api/v4`; for self-hosted use `https://gitlab.company.com/api/v4`), and optional `GITLAB_PROJECT_ID` (default project as numeric ID or `group/project` path), `GITLAB_READ_ONLY_MODE` (enter `true` to force read-only regardless of token scopes), `GITLAB_ALLOWED_PROJECT_IDS` (comma-separated allowlist).
+3. **Title prompt** — defaults to `<host-slug>-GitLab`, derived from `GITLAB_API_URL` (e.g. `gitlab-com-GitLab`).
+4. **Claude Code registration** — `claude mcp add … --env GITLAB_PERSONAL_ACCESS_TOKEN=*** --env GITLAB_API_URL=… -- npx -y @zereight/mcp-gitlab`. Empty optional vars are omitted, not passed as blank.
+5. **Post-registration handshake** — the toolkit spawns the server and drives `initialize` + `tools/list` over stdio, rolling back the registration if it doesn't answer.
+
+The PAT is written to `state/gitlab/<slug>/env` (mode `0600`) for rotation — re-run the setup with the same title to rotate.
+
 ## Status / health-check
 
 ```bash
@@ -157,7 +171,7 @@ Prints `claude mcp list` plus the per-service local state under `./state/`.
 ## Re-running after token expiry / PAT rotation
 
 - **Google services**: in OAuth-consent **Testing** publishing-status (the default for personal use), Google expires refresh tokens after 7 days. When this happens, re-run the setup command — pick the same credentials JSON and the same title; the new tokens overwrite the old ones in `./state/<service>/<slug>/`.
-- **Atlassian / Tempo / Azure DevOps (Tiberriver256) / GitHub**: when your PAT expires or you rotate it for security, re-run the setup command with the same title — the new env file overwrites the old one and Claude Code re-registers with the fresh value.
+- **Atlassian / Tempo / Azure DevOps (Tiberriver256) / GitHub / GitLab**: when your PAT expires or you rotate it for security, re-run the setup command with the same title — the new env file overwrites the old one and Claude Code re-registers with the fresh value.
 - **Azure DevOps (Microsoft, `interactive` / `azcli`)**: nothing to rotate in this toolkit — the Entra session lives in the vendor's cache (interactive) or your `az` CLI session. For `pat` / `envvar`, re-run the setup with the same title to refresh the env value.
 
 ## Layout
@@ -175,7 +189,8 @@ mcp-toolkit/
 │  ├─ setup-linkedin.sh
 │  ├─ setup-azure-devops.sh
 │  ├─ setup-azure-devops-tiberriver.sh
-│  └─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
+│  ├─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
+│  └─ setup-gitlab.sh               # GitLab via zereight/gitlab-mcp (SaaS or self-hosted)
 ├─ vendor/                          # upstream MCP servers (git submodules) + local linkedin-mcp
 │  ├─ gmail-mcp/                    → GongRzhe/Gmail-MCP-Server
 │  ├─ google-calendar-mcp/          → nspady/google-calendar-mcp
@@ -184,6 +199,7 @@ mcp-toolkit/
 │  ├─ tempo-filler-mcp-server/      → tranzact/tempo-filler-mcp-server
 │  ├─ azure-devops-mcp/             → microsoft/azure-devops-mcp
 │  ├─ azure-devops-mcp-tiberriver/  → Tiberriver256/mcp-server-azure-devops
+│  ├─ gitlab-mcp/                   → zereight/gitlab-mcp (pinned v2.1.18)
 │  └─ linkedin-mcp/                 → local Python pkg in this toolkit (FastMCP + linkedin-api + Playwright)
 └─ state/                           # credentials + token caches per `<service>/<slug>` — gitignored
 ```
@@ -239,5 +255,11 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
 - **GitHub (github/github-mcp-server)** — GitHub-hosted remote server, no vendored submodule to pin. Endpoint + auth verified against GitHub's docs:
   - Remote URL `https://api.githubcopilot.com/mcp/` and `Authorization: Bearer <PAT>` header — GitHub Docs, "Setting up the GitHub MCP Server" (<https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp-in-your-ide/set-up-the-github-mcp-server>)
   - PAT is validated at setup against `https://api.github.com/user` (REST API identity endpoint) before registration
+- **GitLab (zereight/gitlab-mcp)** @ `74a8c83` (v2.1.18):
+  - `vendor/gitlab-mcp/config.ts:32` — `GITLAB_PERSONAL_ACCESS_TOKEN` is read here
+  - `vendor/gitlab-mcp/config.ts:42` — `GITLAB_READ_ONLY_MODE` is read here
+  - `vendor/gitlab-mcp/index.ts:1545` — `GITLAB_API_URL` is read here (default `https://gitlab.com`)
+  - `vendor/gitlab-mcp/index.ts:1549` — `GITLAB_PROJECT_ID` is read here
+  - `vendor/gitlab-mcp/index.ts:1551` — `GITLAB_ALLOWED_PROJECT_IDS` is read here
 
 If a vendor changes its requested scopes / env vars upstream, the cloned submodule pin stays put until you explicitly update it (`cd vendor/<name> && git pull`). That's intentional — surprise scope / env changes are an audit problem.

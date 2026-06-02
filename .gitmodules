@@ -19,3 +19,6 @@
 [submodule "vendor/azure-devops-mcp-tiberriver"]
 	path = vendor/azure-devops-mcp-tiberriver
 	url = https://github.com/Tiberriver256/mcp-server-azure-devops.git
+[submodule "vendor/gitlab-mcp"]
+	path = vendor/gitlab-mcp
+	url = https://github.com/zereight/gitlab-mcp.git

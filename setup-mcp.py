@@ -18,6 +18,7 @@ Usage:
     ./setup-mcp.py tempo-filler
     ./setup-mcp.py azure-devops              # Microsoft official, Entra/azcli/PAT
     ./setup-mcp.py azure-devops-tiberriver   # Community PAT fallback
+    ./setup-mcp.py github                    # GitHub official remote server (HTTP + PAT)
     ./setup-mcp.py linkedin
     ./setup-mcp.py doctor                    # list registered MCPs + their state
 
@@ -47,6 +48,11 @@ Four auth flavours are supported:
     2. If pat/envvar, prompts for the secret env var; otherwise auth happens at first tool call.
     3. Prompts for optional tenant + optional domain restriction.
     4. Registers via `claude mcp add … -- npx -y @azure-devops/mcp <org> [flags]`.
+
+  • remote_http  (GitHub via the official remote MCP server)
+    1. Prompts for a GitHub PAT and validates it against api.github.com/user.
+    2. Registers via `claude mcp add --transport http <title> <url> --header "Authorization: Bearer <PAT>"`.
+    3. Post-registration MCP handshake over HTTP (initialize + tools/list), rolls back on failure.
 
 All persistent state (oauth keys + tokens + env files) lives under ./state/<svc>/<slug>/
 so the whole toolkit stays portable. The repo's .gitignore excludes ./state/.
@@ -437,6 +443,49 @@ SERVICES = {
                 "required": False,
                 "validator": "int_or_empty",
                 "description": "Optional default hours per workday (vendor default: 8). Leave blank to use the default.",
+            },
+        ],
+    },
+    # ── GitHub (official remote MCP server) via remote_http ────────────────
+    "github": {
+        "provider": "github",
+        "launcher": "remote_http",  # not a stdio launcher — signals HTTP transport
+        "auth_kind": "remote_http",
+        "label": "GitHub (official remote MCP server)",
+        "short": "GitHub",
+        "service_name": "GitHub",
+        "remote_url": "https://api.githubcopilot.com/mcp/",
+        "pat_setup_url": "https://github.com/settings/personal-access-tokens",
+        "scopes_note": (
+            "GitHub's official server, hosted by GitHub — no local install, no\n"
+            "submodule to vendor. Auth is a GitHub Personal Access Token sent as\n"
+            "an 'Authorization: Bearer <PAT>' header on the HTTP transport.\n"
+            "\n"
+            "Token type — either works:\n"
+            "  • Fine-grained PAT (recommended): https://github.com/settings/personal-access-tokens\n"
+            "      pick the repos + per-resource permissions you want (e.g.\n"
+            "      Contents, Issues, Pull requests, Metadata).\n"
+            "  • Classic PAT: https://github.com/settings/tokens (the 'repo' scope\n"
+            "      covers most read/write; 'read:org' for org data).\n"
+            "You choose the scopes at token-creation time on github.com — this\n"
+            "toolkit doesn't pre-select them. The server auto-hides tools your\n"
+            "token can't use, so a narrower token just means fewer tools.\n"
+            "\n"
+            "Endpoint: https://api.githubcopilot.com/mcp/ (GitHub's documented\n"
+            "remote MCP URL — works with a PAT; no Copilot subscription needed\n"
+            "for the core GitHub tools). Source: GitHub docs, set-up-the-github-mcp-server."
+        ),
+        "env_vars": [
+            {
+                "name": "GITHUB_PERSONAL_ACCESS_TOKEN",
+                "required": True,
+                "validator": "nonempty",
+                "description": (
+                    "GitHub PAT (fine-grained or classic). Created at "
+                    "https://github.com/settings/personal-access-tokens — paste the "
+                    "raw token value (starts with 'github_pat_' or 'ghp_')."
+                ),
+                "secret": True,
             },
         ],
     },
@@ -1640,6 +1689,290 @@ def _setup_entra_login(service_key, s):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Setup — remote_http branch (GitHub via the official remote MCP server)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _github_probe_token(pat, timeout=15):
+    """Probe https://api.github.com/user with the PAT to confirm it's valid
+    before we register. Returns (ok, login, message). Mirrors the ADO probe:
+    validate creds at setup so a green 'done' means the next session works."""
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+
+    req = Request(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": f"Bearer {pat}",
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "mcp-toolkit-setup",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+            login = data.get("login")
+            # Classic PATs report granted scopes here; fine-grained PATs don't.
+            scopes = resp.headers.get("X-OAuth-Scopes")
+            scope_note = ""
+            if scopes is not None:
+                scope_note = f"; classic-PAT scopes: [{scopes.strip() or 'none'}]"
+            elif login:
+                scope_note = "; fine-grained PAT (per-resource permissions)"
+            return True, login, f"token valid — authenticated as '{login}'{scope_note}"
+    except HTTPError as e:
+        if e.code == 401:
+            return False, None, "401 Unauthorized — token is invalid, expired, or revoked"
+        if e.code == 403:
+            return False, None, "403 Forbidden — token blocked or rate-limited (check SSO authorisation if org-protected)"
+        return False, None, f"HTTP {e.code} — {e.reason}"
+    except URLError as e:
+        return False, None, f"Network error reaching api.github.com: {e.reason}"
+    except Exception as e:
+        return False, None, f"Unexpected error: {e}"
+
+
+def _parse_rpc_response(raw, content_type):
+    """Pull the first JSON-RPC object out of an MCP HTTP response, which may be
+    a plain JSON body or an SSE (text/event-stream) frame of `data:` lines."""
+    if not raw:
+        return None
+    ct = (content_type or "").lower()
+    if "text/event-stream" in ct:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            payload = line[len("data:"):].strip()
+            if not payload:
+                continue
+            try:
+                return json.loads(payload)
+            except Exception:
+                continue
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _http_rpc_post(url, headers, payload, timeout=30):
+    """POST one JSON-RPC message to a streamable-HTTP MCP endpoint.
+    Returns (message_or_None, session_id, status, raw_body)."""
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError, URLError
+
+    body = json.dumps(payload).encode("utf-8")
+    h = dict(headers)
+    h["Content-Type"] = "application/json"
+    h["Accept"] = "application/json, text/event-stream"
+    req = Request(url, data=body, headers=h, method="POST")
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+            ct = resp.headers.get("Content-Type")
+            session_id = resp.headers.get("Mcp-Session-Id")
+            return _parse_rpc_response(raw, ct), session_id, resp.status, raw
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "replace")[:300]
+        except Exception:
+            detail = e.reason
+        return None, None, e.code, detail
+    except URLError as e:
+        return None, None, None, f"network error: {e.reason}"
+    except Exception as e:
+        return None, None, None, f"unexpected error: {e}"
+
+
+def _http_mcp_handshake(url, headers, timeout=30):
+    """Drive initialize + (initialized) + tools/list against a remote HTTP MCP
+    server. Returns (ok, message, tool_count). Same contract as the stdio
+    handshake so the rollback flow can treat them uniformly."""
+    init = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "setup-mcp.py", "version": "0"},
+        },
+    }
+    msg, session_id, status, raw = _http_rpc_post(url, headers, init, timeout)
+    if msg is None:
+        return False, f"no JSON-RPC response to initialize (HTTP {status}): {str(raw)[:200]}", 0
+    if "error" in msg:
+        return False, f"initialize errored: {msg['error']}", 0
+    result = msg.get("result", {}) or {}
+    sinfo = result.get("serverInfo", {}) or {}
+    server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
+
+    h2 = dict(headers)
+    if session_id:
+        h2["Mcp-Session-Id"] = session_id
+    # initialized is a notification — no response expected (202 + empty body).
+    _http_rpc_post(url, h2, {"jsonrpc": "2.0", "method": "notifications/initialized"}, timeout)
+
+    tmsg, _, _, _ = _http_rpc_post(url, h2, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, timeout)
+    tools_count = 0
+    if tmsg and "result" in tmsg and isinstance(tmsg["result"].get("tools"), list):
+        tools_count = len(tmsg["result"]["tools"])
+    return True, f"{server_info} responded — {tools_count} tools exposed", tools_count
+
+
+def _claude_mcp_add_http(title, url, headers, step_num=5):
+    cmd = ["claude", "mcp", "add", "--transport", "http", "--scope", "user", title, url]
+    for k, v in headers.items():
+        cmd += ["--header", f"{k}: {v}"]
+    step(step_num, f"Registering with Claude Code as '{title}' (HTTP transport)")
+    print("  command:")
+    redacted = []
+    skip_next = False
+    for tok in cmd:
+        if skip_next:
+            # header value looks like "Authorization: Bearer <secret>"
+            if ":" in tok:
+                name, _ = tok.split(":", 1)
+                redacted.append(f"{name}: ***")
+            else:
+                redacted.append(tok)
+            skip_next = False
+            continue
+        if tok == "--header":
+            skip_next = True
+        redacted.append(tok)
+    print("    " + " ".join(_shellquote(c) for c in redacted))
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"  ✗ claude mcp add failed (exit {result.returncode}).")
+        return False
+    print(f"  ✓ Registered. Restart your Claude Code session to load tools.")
+    return True
+
+
+def _finalize_with_http_handshake(title, final_dir, url, headers, step_num=None):
+    """Post-registration MCP handshake over HTTP. On failure, roll back the
+    `claude mcp add` so Claude Code doesn't carry a broken handle."""
+    if step_num is not None:
+        step(step_num, "Smoke test — MCP handshake against the registered HTTP server")
+    print("  Sending initialize + tools/list to the remote endpoint…")
+    ok, msg, _ = _http_mcp_handshake(url, headers)
+    if ok:
+        print(f"  ✓ {msg}")
+        return True
+    print(f"  ✗ Handshake failed: {msg}")
+    print()
+    print("  Rolling back the registration so the session won't load a broken server…")
+    rm = subprocess.run(
+        ["claude", "mcp", "remove", "--scope", "user", title],
+        capture_output=True, text=True,
+    )
+    if rm.returncode == 0:
+        print(f"  ✓ unregistered '{title}'.")
+    else:
+        print(f"  ⚠ rollback failed (exit {rm.returncode}): {rm.stderr.strip()}")
+        print(f"     Run manually: claude mcp remove --scope user {title}")
+    print(f"  ⓘ State dir preserved at {final_dir} for debugging.")
+    return False
+
+
+def _setup_remote_http(service_key, s):
+    url = s["remote_url"]
+
+    step(1, f"Create a GitHub Personal Access Token for {s['label']}")
+    print(f"""
+  This server is hosted by GitHub at:
+    {url}
+  No local install and nothing to vendor — auth is a GitHub PAT sent as an
+  'Authorization: Bearer <PAT>' header on the HTTP transport.
+
+  Create the token here:
+    {s['pat_setup_url']}
+
+  Notes: {s['scopes_note']}
+""")
+    input("  Press Enter once you have your PAT ready… ")
+
+    step(2, "Enter the token")
+    spec = s["env_vars"][0]
+    print(f"  {spec['name']}")
+    print(f"    {spec['description']}")
+    pat = prompt(
+        spec["name"],
+        validator=VALIDATORS.get(spec.get("validator", "nonempty")),
+        secret=spec.get("secret", False),
+    ).strip()
+
+    step(3, "Validate the token against the GitHub API")
+    print("  Probing https://api.github.com/user to verify the PAT…")
+    ok, login, msg = _github_probe_token(pat)
+    if not ok:
+        print(f"  ✗ {msg}")
+        print()
+        print("  Common causes & fixes:")
+        print("   • Token mistyped / truncated → re-copy the raw value from github.com")
+        print("   • Token expired or revoked → create a new one (link printed above)")
+        print("   • Org enforces SSO → click 'Configure SSO' / 'Authorize' on the token page")
+        return 1
+    print(f"  ✓ {msg}")
+
+    # Stage state (PAT stored for rotation/inspection; registration uses --header).
+    tmp_slug = "_pending"
+    state_dir = make_state_dir(service_key, tmp_slug)
+    env_path = state_dir / "env"
+    write_env_file(env_path, {spec["name"]: pat})
+    print(f"\n  ✓ token staged at {env_path} (mode 600)")
+
+    step(4, "Pick a title for this MCP server in Claude Code")
+    print("  Note: claude mcp names accept letters, numbers, hyphens, underscores only.")
+    login_slug = slugify(login or "") or "github"
+    default_title = f"{login_slug}-{s['service_name']}"
+    print(f"  Default is <login>-{s['service_name']} (e.g. {default_title}).")
+    title = prompt("Title", default=default_title, validator=validate_mcp_name)
+
+    final_slug = slugify(title)
+    final_dir = STATE_ROOT / service_key / final_slug
+    replacing = final_dir.exists() and final_dir != state_dir
+    if replacing:
+        print(f"  ⓘ State dir already exists for slug '{final_slug}': {final_dir}")
+        if not confirm("Replace existing state with the freshly entered token?", default=True):
+            print("     Pick a different title or remove the existing state dir first.")
+            return 1
+        shutil.rmtree(final_dir)
+        print(f"  ✓ removed old state dir")
+    if final_dir != state_dir:
+        state_dir.rename(final_dir)
+        env_path = final_dir / "env"
+        print(f"  ✓ state moved to {final_dir}")
+
+    if replacing:
+        subprocess.run(
+            ["claude", "mcp", "remove", "--scope", "user", title],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    headers = {"Authorization": f"Bearer {pat}"}
+    if not _claude_mcp_add_http(title, url, headers, step_num=5):
+        return 1
+
+    if not _finalize_with_http_handshake(title, final_dir, url, headers, step_num=6):
+        return 1
+
+    hr("═")
+    print(f"  ✓ Done. '{title}' is registered, the PAT is verified, and the server answers MCP handshake.")
+    print(f"    State:  {final_dir}")
+    print(f"    Endpoint: {url}")
+    print(f"    Rotate the PAT later by re-running this command with the same title.")
+    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    hr("═")
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Top-level service setup
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1662,6 +1995,8 @@ def cmd_setup(service_key):
         return _setup_cookie_paste(service_key, s)
     if s["auth_kind"] == "entra_login":
         return _setup_entra_login(service_key, s)
+    if s["auth_kind"] == "remote_http":
+        return _setup_remote_http(service_key, s)
     print(f"unknown auth_kind '{s['auth_kind']}' for service '{service_key}'")
     return 2
 

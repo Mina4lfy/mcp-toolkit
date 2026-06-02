@@ -1,6 +1,6 @@
 # mcp-toolkit
 
-Plug-and-play setup for MCP servers inside Claude Code, across five providers: Google (Gmail / Calendar / Drive), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), and Azure DevOps (boards / repos / pipelines / wikis / search). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/`. All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
+Plug-and-play setup for MCP servers inside Claude Code, across six providers: Google (Gmail / Calendar / Drive), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), and GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (the GitHub entry is GitHub-hosted, so it has no submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
 
 ## What this gives you
 
@@ -16,6 +16,7 @@ Up to six Claude Code MCP servers — each titled after the account or host that
 | LinkedIn | `vendor/linkedin-mcp/` (this toolkit) | uv (local source) | Cookie paste | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID`, optional timezone + working-hours |
 | Azure DevOps (Microsoft official) | [`microsoft/azure-devops-mcp`](https://github.com/microsoft/azure-devops-mcp) | npx | PAT (default, validated at setup) / `az login` / Entra browser | positional `<organization>`, flags `--authentication`, `-d`, `--tenant`; PAT modes set `PERSONAL_ACCESS_TOKEN` or `ADO_MCP_AUTH_TOKEN` |
 | Azure DevOps (PAT fallback) | [`Tiberriver256/mcp-server-azure-devops`](https://github.com/Tiberriver256/mcp-server-azure-devops) | npx | Azure DevOps PAT | `AZURE_DEVOPS_ORG_URL`, `AZURE_DEVOPS_AUTH_METHOD`, `AZURE_DEVOPS_PAT`, optional `AZURE_DEVOPS_DEFAULT_PROJECT` |
+| GitHub (official remote) | [`github/github-mcp-server`](https://github.com/github/github-mcp-server) (GitHub-hosted, no local install) | HTTP transport | GitHub PAT | endpoint `https://api.githubcopilot.com/mcp/`, header `Authorization: Bearer <PAT>` |
 
 > **Scope note:** the Atlassian + Tempo entries here target **self-hosted Jira Data Center / Server**. They use a Jira-profile Personal Access Token. They do **not** target Atlassian Cloud — for Cloud, register Atlassian's hosted Rovo MCP server directly (no toolkit support needed since there's no local install).
 >
@@ -40,9 +41,10 @@ Up to six Claude Code MCP servers — each titled after the account or host that
 ./bin/setup-tempo.sh                      # Tempo time tracking on Jira tasks (Data Center)
 ./bin/setup-azure-devops.sh               # Microsoft official @azure-devops/mcp
 ./bin/setup-azure-devops-tiberriver.sh    # Tiberriver256 community PAT fallback
+./bin/setup-github.sh                     # GitHub official remote server (HTTP + PAT)
 ```
 
-The script branches on auth flavour. The Google entries follow `oauth_browser`; the Atlassian + Tempo + Tiberriver256 entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`.
+The script branches on auth flavour. The Google entries follow `oauth_browser`; the Atlassian + Tempo + Tiberriver256 entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
 
 ```bash
 ./bin/setup-linkedin.sh     # LinkedIn (Voyager API + Playwright)
@@ -127,6 +129,23 @@ What setup will ask you for, in order:
 3. **Title prompt** — defaults to `<org-slug>-AzureDevOps`, derived from the ADO URL (the script special-cases `dev.azure.com/<org>` + `<org>.visualstudio.com` paths).
 4. **Claude Code registration** — `claude mcp add … --env AZURE_DEVOPS_ORG_URL=… --env AZURE_DEVOPS_PAT=*** -- npx -y @tiberriver256/mcp-server-azure-devops`.
 
+### GitHub (official remote) — `remote_http` flow
+
+`./bin/setup-github.sh` registers GitHub's **official, GitHub-hosted** MCP server at `https://api.githubcopilot.com/mcp/`. Unlike every other entry, there is **no local install and no submodule to vendor** — the server runs on GitHub's side and Claude Code talks to it over the HTTP transport. Auth is a GitHub Personal Access Token sent as an `Authorization: Bearer <PAT>` header.
+
+1. **Create a GitHub PAT** — either type works:
+   - **Fine-grained** (recommended): <https://github.com/settings/personal-access-tokens> — pick the repos + per-resource permissions you want (e.g. Contents, Issues, Pull requests, Metadata).
+   - **Classic**: <https://github.com/settings/tokens> — the `repo` scope covers most read/write; add `read:org` for org data.
+
+   You choose the scopes yourself at token-creation time — the toolkit does **not** pre-select them. The server auto-hides tools your token can't use, so a narrower token simply exposes fewer tools.
+2. **Token prompt** — read with `getpass` (no echo).
+3. **Live validation** — the toolkit probes `https://api.github.com/user` with the PAT before registering, so a green "done" means the token is real (and it auto-detects your login for the title default). Hard-fails on 401/403.
+4. **Title prompt** — defaults to `<login>-GitHub` (e.g. `minaalfy-GitHub`).
+5. **Claude Code registration** — `claude mcp add --transport http --scope user "<title>" "https://api.githubcopilot.com/mcp/" --header "Authorization: Bearer ***"`. The header value is redacted in the echoed command so the PAT never appears in logs.
+6. **Post-registration handshake** — the toolkit drives `initialize` + `tools/list` against the remote endpoint (parsing either JSON or SSE responses) and rolls back the registration if the server doesn't answer.
+
+The PAT is also written to `state/github/<slug>/env` (mode `0600`) for rotation — re-run the setup with the same title to rotate. No Copilot subscription is required for the core GitHub tools.
+
 ## Status / health-check
 
 ```bash
@@ -138,7 +157,7 @@ Prints `claude mcp list` plus the per-service local state under `./state/`.
 ## Re-running after token expiry / PAT rotation
 
 - **Google services**: in OAuth-consent **Testing** publishing-status (the default for personal use), Google expires refresh tokens after 7 days. When this happens, re-run the setup command — pick the same credentials JSON and the same title; the new tokens overwrite the old ones in `./state/<service>/<slug>/`.
-- **Atlassian / Tempo / Azure DevOps (Tiberriver256)**: when your PAT expires or you rotate it for security, re-run the setup command with the same title — the new env file overwrites the old one and Claude Code re-registers with the fresh value.
+- **Atlassian / Tempo / Azure DevOps (Tiberriver256) / GitHub**: when your PAT expires or you rotate it for security, re-run the setup command with the same title — the new env file overwrites the old one and Claude Code re-registers with the fresh value.
 - **Azure DevOps (Microsoft, `interactive` / `azcli`)**: nothing to rotate in this toolkit — the Entra session lives in the vendor's cache (interactive) or your `az` CLI session. For `pat` / `envvar`, re-run the setup with the same title to refresh the env value.
 
 ## Layout
@@ -155,7 +174,8 @@ mcp-toolkit/
 │  ├─ setup-tempo.sh
 │  ├─ setup-linkedin.sh
 │  ├─ setup-azure-devops.sh
-│  └─ setup-azure-devops-tiberriver.sh
+│  ├─ setup-azure-devops-tiberriver.sh
+│  └─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
 ├─ vendor/                          # upstream MCP servers (git submodules) + local linkedin-mcp
 │  ├─ gmail-mcp/                    → GongRzhe/Gmail-MCP-Server
 │  ├─ google-calendar-mcp/          → nspady/google-calendar-mcp
@@ -216,5 +236,8 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - `vendor/azure-devops-mcp/src/auth.ts:95-107` — `envvar` mode reads `ADO_MCP_AUTH_TOKEN` (raw bearer)
 - **Azure DevOps (Tiberriver256/mcp-server-azure-devops)** @ `7ad868b` (v0.1.45):
   - `vendor/azure-devops-mcp-tiberriver/src/index.ts:55-67` — `AZURE_DEVOPS_ORG_URL` / `AZURE_DEVOPS_AUTH_METHOD` / `AZURE_DEVOPS_PAT` / `AZURE_DEVOPS_DEFAULT_PROJECT` are read here
+- **GitHub (github/github-mcp-server)** — GitHub-hosted remote server, no vendored submodule to pin. Endpoint + auth verified against GitHub's docs:
+  - Remote URL `https://api.githubcopilot.com/mcp/` and `Authorization: Bearer <PAT>` header — GitHub Docs, "Setting up the GitHub MCP Server" (<https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp-in-your-ide/set-up-the-github-mcp-server>)
+  - PAT is validated at setup against `https://api.github.com/user` (REST API identity endpoint) before registration
 
 If a vendor changes its requested scopes / env vars upstream, the cloned submodule pin stays put until you explicitly update it (`cd vendor/<name> && git pull`). That's intentional — surprise scope / env changes are an audit problem.

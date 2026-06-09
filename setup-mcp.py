@@ -250,15 +250,17 @@ SERVICES = {
                 "name": "CONFLUENCE_URL",
                 "required": False,
                 "validator": "url_or_empty",
-                "description": "Optional Confluence base URL (e.g. https://confluence.company.com or .../wiki). Leave blank to skip Confluence.",
+                "description": "Confluence base URL (e.g. https://confluence.company.com or .../wiki). Leave blank to derive from JIRA_URL (appends /wiki — correct for Atlassian Cloud / single-instance, where Jira + Confluence share a host).",
+                "derive_from_env": "JIRA_URL",
+                "derive_suffix": "/wiki",
             },
             {
                 "name": "CONFLUENCE_PERSONAL_TOKEN",
                 "required": False,
                 "validator": "nonempty_or_empty",
-                "description": "Optional Confluence DC PAT. Leave blank to skip.",
+                "description": "Confluence DC PAT. Leave blank to reuse JIRA_PERSONAL_TOKEN (the same token works when Jira + Confluence share an instance).",
                 "secret": True,
-                "skip_if_blank": "CONFLUENCE_URL",
+                "derive_from_env": "JIRA_PERSONAL_TOKEN",
             },
         ],
     },
@@ -1190,7 +1192,15 @@ def _setup_api_token(service_key, s):
             values[name] = ""
             print(f"  ↷ Skipping {name} (paired with {skip_if} which was left blank)")
             continue
-        marker = "" if required else "  (optional, leave blank to skip)"
+        derive_from = spec.get("derive_from_env")
+        if not required:
+            marker = (
+                f"  (optional, leave blank to derive from {derive_from})"
+                if derive_from
+                else "  (optional, leave blank to skip)"
+            )
+        else:
+            marker = ""
         print(f"\n  {name}{marker}")
         print(f"    {spec['description']}")
         v = prompt(
@@ -1200,6 +1210,17 @@ def _setup_api_token(service_key, s):
             allow_empty=not required,
             secret=spec.get("secret", False),
         )
+        # A blank optional value can inherit from a sibling env var collected
+        # earlier this loop — e.g. on Atlassian Cloud / a single Data Center
+        # instance, Confluence shares Jira's host (+ /wiki) and PAT. The source
+        # var is listed before this one in env_vars, so it's already in `values`.
+        if not v and derive_from:
+            src = values.get(derive_from, "")
+            if src:
+                suffix = spec.get("derive_suffix", "")
+                v = src.rstrip("/") + suffix if suffix else src
+                shown = "********" if spec.get("secret") else v
+                print(f"  ↳ left blank — derived from {derive_from}: {shown}")
         values[name] = v
 
     tmp_slug = "_pending"

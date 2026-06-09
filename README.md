@@ -11,7 +11,7 @@ Up to seven Claude Code MCP servers — each titled after the account or host th
 | Gmail | [`@gongrzhe/server-gmail-autoauth-mcp`](https://github.com/GongRzhe/Gmail-MCP-Server) | npx | OAuth browser | `gmail.modify`, `gmail.settings.basic` |
 | Google Calendar | [`@cocal/google-calendar-mcp`](https://github.com/nspady/google-calendar-mcp) | npx | OAuth browser | `calendar` |
 | Google Drive | [`@piotr-agier/google-drive-mcp`](https://github.com/piotr-agier/google-drive-mcp) | npx | OAuth browser | `drive` (full read+write) |
-| Atlassian (Jira + Confluence DC) | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) | uvx | Jira DC PAT | `JIRA_URL`, `JIRA_PERSONAL_TOKEN`, optional `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` |
+| Atlassian (Jira + Confluence DC) | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) | uvx | Jira DC PAT | `JIRA_URL`, `JIRA_PERSONAL_TOKEN`; `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` (leave blank to derive from Jira — `JIRA_URL` + `/wiki` and the same PAT) |
 | Tempo (Jira time tracking) | [`tranzact/tempo-filler-mcp-server`](https://github.com/tranzact/tempo-filler-mcp-server) | npx | Jira DC PAT | `TEMPO_BASE_URL`, `TEMPO_PAT`, optional `TEMPO_DEFAULT_HOURS` |
 | LinkedIn | `vendor/linkedin-mcp/` (this toolkit) | uv (local source) | Cookie paste | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID`, optional timezone + working-hours |
 | Azure DevOps (Microsoft official) | [`microsoft/azure-devops-mcp`](https://github.com/microsoft/azure-devops-mcp) | npx | PAT (default, validated at setup) / `az login` / Entra browser | positional `<organization>`, flags `--authentication`, `-d`, `--tenant`; PAT modes set `PERSONAL_ACCESS_TOKEN` or `ADO_MCP_AUTH_TOKEN` |
@@ -38,7 +38,7 @@ Up to seven Claude Code MCP servers — each titled after the account or host th
 ./bin/setup-google-gmail.sh
 ./bin/setup-google-calendar.sh
 ./bin/setup-google-drive.sh
-./bin/setup-atlassian.sh                  # Jira + optional Confluence (Data Center)
+./bin/setup-atlassian.sh                  # Jira + Confluence (Confluence derives from Jira if left blank)
 ./bin/setup-tempo.sh                      # Tempo time tracking on Jira tasks (Data Center)
 ./bin/setup-azure-devops.sh               # Microsoft official @azure-devops/mcp
 ./bin/setup-azure-devops-tiberriver.sh    # Tiberriver256 community PAT fallback

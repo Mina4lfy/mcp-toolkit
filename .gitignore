@@ -16,3 +16,6 @@ build/
 
 # MCP Toolkit.
 *_client_secret*.json
+
+# Vendor libraries.
+vendor/

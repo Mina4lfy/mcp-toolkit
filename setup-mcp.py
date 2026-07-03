@@ -1300,7 +1300,7 @@ def _setup_remote_oauth(service_key, s):
         client_id, secret = _prompt_oauth_client(callback_port)
         port = callback_port
 
-    step(5, "Register / unregister servers in Claude Code")
+    step(4, "Register / unregister servers in Claude Code")
     titles = _google_titles(handle, s, apps)
     added_ok = []
     for k in to_add:
@@ -1324,7 +1324,7 @@ def _setup_remote_oauth(service_key, s):
     if added_ok:
         # Ground-truth scopes: ask each live server what it will actually request,
         # so the consent screen is configured with the real set (not a guess).
-        step(6, "Confirm consent-screen scopes (read live from each server)")
+        step(5, "Confirm consent-screen scopes (read live from each server)")
         print("  These are the scopes the servers will request — every one must be added")
         print("  to your OAuth consent screen (Testing mode: your test user can approve them):")
         any_probe = False
@@ -1339,7 +1339,7 @@ def _setup_remote_oauth(service_key, s):
         if not any_probe:
             print("    (couldn't probe live — use the scopes printed in STEP 2 above.)")
 
-        step(7, "Authorize now (opens your browser) — one sign-in per server")
+        step(6, "Authorize now (opens your browser) — one sign-in per server")
         print("  Registration alone leaves each server at '! Needs authentication'.")
         print("  Sign in now to finish (the old flow did this during setup too):")
         if confirm("Run `claude mcp login` for the new server(s) now?", default=True):

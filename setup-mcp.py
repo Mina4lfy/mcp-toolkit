@@ -1128,13 +1128,18 @@ def _setup_remote_oauth(service_key, s):
     for k in to_add:
         if _claude_mcp_add_http_oauth(titles[k], apps[k]["remote_url"], client_id, port, secret):
             added_ok.append(k)
+    removed_ok = []
     for k in to_remove:
         title = titles[k]
         if confirm(f"Remove '{title}' from Claude Code?", default=True):
             subprocess.run(["claude", "mcp", "remove", "--scope", "user", title])
             print(f"  ✓ Removed '{title}'.")
+            removed_ok.append(k)
+        else:
+            print(f"  ⓘ Kept '{title}' — still registered; leaving it in tracked state.")
 
-    final_apps = sorted(set(keep) | set(added_ok))
+    # Declined removals stay registered → keep them in state (don't drop silently).
+    final_apps = sorted((set(registered) - set(removed_ok)) | set(added_ok))
     final_dir = _save_google_state(service_key, handle, client_id, secret, port, final_apps)
     print(f"\n  ✓ State saved at {final_dir} (mode 600).")
 

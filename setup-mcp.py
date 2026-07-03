@@ -1042,11 +1042,11 @@ def _prompt_oauth_client(callback_port):
     JSON (preferred) or enter Client ID + Secret manually. Returns (id, secret)."""
     default = _latest_client_json() or ""
     print("  Point me at the OAuth client JSON you downloaded (Web application),")
-    print("  or leave blank to type the Client ID / Secret by hand.")
+    print("  or type 'manual' to enter the Client ID / Secret by hand.")
     while True:
-        raw = prompt("Path to client JSON (blank = manual)",
-                     default=default if default else None, allow_empty=True)
-        if not raw:  # manual entry
+        raw = prompt("Path to client JSON ('manual' to type creds)",
+                     default=default if default else None, allow_empty=not default)
+        if not raw or raw.strip().lower() == "manual":  # manual entry
             cid = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
             sec = prompt("OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
             return cid, sec
@@ -1068,7 +1068,7 @@ def _google_probe_scopes(title):
         import urllib.parse as _u
         out = subprocess.run(
             ["claude", "mcp", "login", title, "--no-browser"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
         )
         text = (out.stdout or "") + (out.stderr or "")
         for tok in text.split():
@@ -1254,6 +1254,7 @@ def _setup_remote_oauth(service_key, s):
         print("  to your OAuth consent screen (Testing mode: your test user can approve them):")
         any_probe = False
         for k in added_ok:
+            print(f"    • probing {s['apps'][k]['service_name']}… (a few seconds)")
             scopes = _google_probe_scopes(titles[k])
             if scopes:
                 any_probe = True

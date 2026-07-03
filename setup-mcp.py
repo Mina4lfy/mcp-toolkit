@@ -1065,7 +1065,7 @@ def _prompt_oauth_client(callback_port):
             return cid.strip(), sec.strip()
         try:
             cid, sec = _read_oauth_client_json(raw, callback_port)
-            print(f"    ✓ read Web-app client {cid[:24]}… from {Path(raw).name}")
+            print(f"    ✓ read OAuth client {cid[:24]}… from {Path(raw).name}")
             return cid, sec
         except ValueError as e:
             print(f"    ✗ {e}")
@@ -1164,7 +1164,11 @@ def _google_rotate_secret(service_key, s, state):
     step(1, "Rotate the OAuth client secret")
     print("  Create a new secret for the SAME OAuth client in Cloud Console:")
     print(f"    {s['credentials_url']}")
-    new_secret = prompt("New OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
+    new_secret = prompt(
+        "New OAuth Client Secret",
+        validator=lambda v: (_looks_like_secret(v),
+            "that looks malformed (a file path?) — paste the GOCSPX-… secret value"),
+        secret=True).strip()
     handle = state["handle"]
     client_id = state["client_id"]
     port = state.get("callback_port") or s["callback_port"]

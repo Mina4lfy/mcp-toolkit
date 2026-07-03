@@ -919,15 +919,21 @@ def prompt_multiselect(question, options, preselected=None):
 
 # --- Google shared-OAuth-client state (one client covers every selected app) ---
 
-def _google_state_dir_existing(service_key):
-    """Most-recently-modified state dir under state/<service_key>/ with an env, or None."""
+def _list_google_handles(service_key):
+    """Every registered Google account under state/<service_key>/, newest first.
+    Each handle is an INDEPENDENT account (its own OAuth client + its own
+    <handle>-Gmail/Drive/Calendar servers) — the toolkit supports several
+    side-by-side (e.g. minaalfy8 and minaalfykamel)."""
     root = STATE_ROOT / service_key
     if not root.is_dir():
-        return None
+        return []
     dirs = [d for d in root.iterdir() if d.is_dir() and (d / "env").exists()]
-    if not dirs:
-        return None
-    return max(dirs, key=lambda d: (d / "env").stat().st_mtime)
+    dirs.sort(key=lambda d: (d / "env").stat().st_mtime, reverse=True)
+    out = []
+    for d in dirs:
+        env = _parse_env_file(d / "env")
+        out.append(env.get("GOOGLE_HANDLE", d.name))
+    return out
 
 
 def _parse_env_file(path):
@@ -941,9 +947,14 @@ def _parse_env_file(path):
     return out
 
 
-def _load_google_state(service_key):
-    d = _google_state_dir_existing(service_key)
-    if not d:
+def _load_google_state(service_key, handle):
+    """Load the state for ONE specific account (handle), or None if it's new.
+    Keyed by the handle's slug — NOT most-recent — so adding a second account
+    never converges (overwrites) the first."""
+    if not handle:
+        return None
+    d = STATE_ROOT / service_key / (slugify(handle) or "google")
+    if not (d / "env").exists():
         return None
     env = _parse_env_file(d / "env")
     apps = [a for a in env.get("GOOGLE_APPS", "").split(",") if a]
@@ -1186,22 +1197,64 @@ def _google_rotate_secret(service_key, s, state):
     return 0
 
 
+def prompt_select(question, options):
+    """Single-select from options (list of (key, label)). Returns the chosen key.
+    Enter accepts option 1."""
+    print(f"  {question}")
+    for i, (_, label) in enumerate(options, 1):
+        print(f"    {i}. {label}")
+    while True:
+        raw = input("  choice [1]: ").strip() or "1"
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            return options[int(raw) - 1][0]
+        print("    ✗ enter a number from the list")
+
+
+def _prompt_new_handle(existing):
+    while True:
+        h = slugify(prompt("New account handle (e.g. your email prefix, like 'minaalfy8')",
+                           validator=VALIDATORS["nonempty"])) or ""
+        if not h:
+            print("    ✗ handle can't be empty")
+            continue
+        if h in existing:
+            print(f"    ✗ '{h}' already exists — choose it from the menu to manage it,")
+            print("      or pick a different handle for the new account")
+            continue
+        return h
+
+
 def _setup_remote_oauth(service_key, s):
     apps = s["apps"]
     callback_port = s["callback_port"]
-    state = _load_google_state(service_key)
-    registered = list(state["apps"]) if state else []
 
-    if state:
-        step(0, "Existing Google setup found — converging to your new selection")
-        cid = state.get("client_id", "")
-        print(f"  Shared OAuth client: {cid[:20]}… (reused)")
-        print(f"  Handle: {state.get('handle')}")
-        print(f"  Currently registered: {', '.join(sorted(registered)) or '(none)'}")
+    # STEP 0 — pick the ACCOUNT first. Each Google account is INDEPENDENT: its own
+    # OAuth client + its own <handle>-Gmail/Drive/Calendar servers. Several coexist
+    # (e.g. minaalfy8 and minaalfykamel). Loading state is keyed by the chosen
+    # handle, so adding a new account never converges (overwrites) another one.
+    handles = _list_google_handles(service_key)
+    step(0, "Which Google account?")
+    if handles:
+        opts = []
+        for h in handles:
+            st = _load_google_state(service_key, h)
+            apps_str = ", ".join(sorted(st["apps"])) if st and st.get("apps") else "(none)"
+            opts.append((h, f"{h}   (apps: {apps_str})"))
+        opts.append(("__new__", "➕  add a DIFFERENT / new account"))
+        choice = prompt_select("Manage an existing account, or add a new one:", opts)
+        handle = _prompt_new_handle(handles) if choice == "__new__" else choice
     else:
-        step(0, "First-time Google Workspace setup")
-        print("  No existing Google state — this creates ONE shared OAuth client.")
+        print("  No Google accounts registered yet.")
         print(f"  Docs: {s['docs_url']}")
+        handle = _prompt_new_handle(handles)
+
+    state = _load_google_state(service_key, handle)
+    registered = list(state["apps"]) if state else []
+    if state:
+        print(f"\n  Managing '{handle}' — client {state.get('client_id','')[:20]}…,"
+              f" registered apps: {', '.join(sorted(registered)) or '(none)'}")
+    else:
+        print(f"\n  New account '{handle}' — this gets its own OAuth client.")
 
     step(1, "Choose which Google apps you want")
     options = [(k, f"{apps[k]['service_name']}  ({apps[k]['remote_url']})") for k in apps]
@@ -1242,13 +1295,9 @@ def _setup_remote_oauth(service_key, s):
             _print_google_cloud_prep(s, to_add, first_run=False, callback_port=port)
     else:
         _print_google_cloud_prep(s, desired, first_run=True, callback_port=callback_port)
-        step(3, "Provide your OAuth client (Desktop app or Web application)")
+        step(3, f"Provide the OAuth client for '{handle}' (Desktop app or Web application)")
+        print(f"  Servers will be titled '{handle}-Gmail', '{handle}-GoogleDrive', etc.")
         client_id, secret = _prompt_oauth_client(callback_port)
-        step(4, "Pick a title handle for these servers")
-        print("  Servers are titled '<handle>-Gmail', '<handle>-GoogleDrive', etc.")
-        print("  (claude mcp names: letters/numbers/hyphens/underscores only.)")
-        handle = slugify(prompt("Handle (e.g. your email prefix)",
-                                validator=VALIDATORS["nonempty"])) or "google"
         port = callback_port
 
     step(5, "Register / unregister servers in Claude Code")

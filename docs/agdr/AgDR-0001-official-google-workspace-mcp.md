@@ -94,6 +94,13 @@ are one `SERVICES["google"]["apps"]` entry away.
   4. **Auth is completed during setup again.** STEP 7 offers to run `claude mcp login`
      per new server, restoring the old flow's "connected right after adding" UX instead of
      leaving the server at `! Needs authentication`.
+  5. **Multiple accounts must stay independent (regression fix).** The first converge
+     design keyed state on the *most-recently-used* account, so adding a second Google
+     account (e.g. `minaalfykamel` alongside `minaalfy8`) converged — i.e. overwrote — the
+     first, breaking the old flow's side-by-side multi-account support. Fixed: STEP 0 now
+     selects the account first and state is loaded **per handle** (`state/google/<slug>/`),
+     so each account has its own OAuth client + its own `<handle>-<App>` servers and edits
+     never cross accounts. (Ref: PR #3 follow-up.)
 
 ## Artifacts
 

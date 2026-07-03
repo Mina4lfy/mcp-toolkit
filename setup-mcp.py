@@ -1005,11 +1005,23 @@ def _latest_client_json():
     return matches[0] if matches else None
 
 
+def _looks_like_secret(v):
+    """True if v is plausibly a Google OAuth client secret (e.g. GOCSPX-…).
+    Rejects obvious mis-pastes — a file path, a value with whitespace, or an
+    absurdly long string — so we never persist garbage as the client secret
+    (which Google then rejects with 'the provided client secret is invalid')."""
+    v = (v or "").strip()
+    if not v or "/" in v or v.endswith(".json") or any(c.isspace() for c in v):
+        return False
+    return 8 <= len(v) <= 60
+
+
 def _read_oauth_client_json(path_str, callback_port):
     """Parse a downloaded Google OAuth client JSON → (client_id, client_secret).
-    Enforces that it's a **Web application** client (type `web`) — a Desktop
-    (`installed`) client can't register the http://localhost:<port>/callback
-    redirect Claude Code uses, so we refuse it early with a clear message.
+    Accepts BOTH a **Desktop** (`installed`) and a **Web application** (`web`)
+    client. Desktop clients work fine with Claude Code's loopback redirect —
+    Google allows any localhost port for installed apps — and are the simplest
+    option (no redirect URI to pre-register); that's what the old flow used.
     Returns (client_id, client_secret) or raises ValueError."""
     path = Path(path_str).expanduser()
     if not path.exists():
@@ -1018,23 +1030,20 @@ def _read_oauth_client_json(path_str, callback_port):
         data = json.loads(path.read_text())
     except Exception as e:
         raise ValueError(f"not valid JSON: {e}")
-    if "installed" in data:
-        raise ValueError(
-            "this is a DESKTOP ('installed') OAuth client — Claude Code needs a\n"
-            "    WEB APPLICATION client with redirect http://localhost:%d/callback.\n"
-            "    In Cloud Console → Credentials → Create credentials → OAuth client ID,\n"
-            "    choose 'Web application' and add that redirect URI, then re-download."
-            % callback_port
-        )
-    blk = data.get("web")
+    blk = data.get("web") or data.get("installed")
     if not blk or not blk.get("client_id"):
-        raise ValueError("expected a Google OAuth 'web' client JSON with a client_id")
-    want = f"http://localhost:{callback_port}/callback"
-    redirects = blk.get("redirect_uris") or []
-    if want not in redirects:
-        print(f"    ⚠ this client's redirect_uris {redirects} do not include")
-        print(f"      {want} — add it in Cloud Console or the OAuth login will fail.")
-    return blk["client_id"], blk.get("client_secret", "")
+        raise ValueError("expected a Google OAuth client JSON ('web' or 'installed') with a client_id")
+    cid, sec = blk["client_id"], blk.get("client_secret", "")
+    if not _looks_like_secret(sec):
+        raise ValueError("this client JSON has no usable client_secret (or it looks malformed)")
+    # A 'web' client only accepts pre-registered redirects; a Desktop client
+    # accepts any loopback port, so it needs no redirect check.
+    if "web" in data:
+        want = f"http://localhost:{callback_port}/callback"
+        if want not in (blk.get("redirect_uris") or []):
+            print(f"    ⚠ this Web client's redirect_uris {blk.get('redirect_uris')} do not include")
+            print(f"      {want} — add it in Cloud Console, or use a Desktop client instead.")
+    return cid, sec
 
 
 def _prompt_oauth_client(callback_port):
@@ -1048,8 +1057,12 @@ def _prompt_oauth_client(callback_port):
                      default=default if default else None, allow_empty=not default)
         if not raw or raw.strip().lower() == "manual":  # manual entry
             cid = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
-            sec = prompt("OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
-            return cid, sec
+            sec = prompt(
+                "OAuth Client Secret",
+                validator=lambda v: (_looks_like_secret(v),
+                    "that looks malformed (a file path?) — paste the GOCSPX-… secret value, not the JSON path"),
+                secret=True)
+            return cid.strip(), sec.strip()
         try:
             cid, sec = _read_oauth_client_json(raw, callback_port)
             print(f"    ✓ read Web-app client {cid[:24]}… from {Path(raw).name}")
@@ -1107,11 +1120,12 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
             print(f"        {sc}")
         print(f"""
   2d. Create ONE OAuth 2.0 Client ID ({s['credentials_url']}):
-        • Application type:         Web application   ← NOT "Desktop app"
-        • Authorized redirect URI:  http://localhost:{callback_port}/callback
-      A Desktop/"installed" client registers only http://localhost and will fail
-      with redirect_uri_mismatch. Download the JSON — you can point the setup at
-      it in the next step instead of copy-pasting the Client ID / Secret.
+        • Application type:  Desktop app  (simplest — no redirect URI to configure;
+          Google accepts Claude Code's loopback sign-in on any localhost port).
+          A "Web application" client also works if you add the redirect URI
+          http://localhost:{callback_port}/callback to it.
+      Download the JSON — point the setup at it in the next step (or paste the
+      Client ID / Secret by hand).
 """)
     else:
         step(2, "Google Cloud Console — add the new app(s) to your existing setup")
@@ -1209,14 +1223,22 @@ def _setup_remote_oauth(service_key, s):
         secret = state.get("client_secret", "")
         handle = state["handle"]
         port = state.get("callback_port") or callback_port
-        if not secret:
-            secret = prompt("OAuth Client Secret (not found in state — re-enter)",
-                            validator=VALIDATORS["nonempty"], secret=True)
+        # A stored secret that no longer looks like a secret (e.g. a stale path
+        # from a bad earlier run) is the classic "the provided client secret is
+        # invalid" cause — force a re-provide instead of silently reusing junk.
+        bad_secret = not _looks_like_secret(secret)
+        if bad_secret and secret:
+            print(f"  ⚠ the stored client secret looks malformed — you'll re-provide the client.")
+        reuse = (not bad_secret) and confirm(
+            f"Reuse the stored OAuth client {client_id[:24]}…?", default=True)
+        if not reuse:
+            step(3, "Provide your OAuth client (Desktop app or Web application)")
+            client_id, secret = _prompt_oauth_client(port)
         if to_add:
             _print_google_cloud_prep(s, to_add, first_run=False, callback_port=port)
     else:
         _print_google_cloud_prep(s, desired, first_run=True, callback_port=callback_port)
-        step(3, "Provide your OAuth client (Web application)")
+        step(3, "Provide your OAuth client (Desktop app or Web application)")
         client_id, secret = _prompt_oauth_client(callback_port)
         step(4, "Pick a title handle for these servers")
         print("  Servers are titled '<handle>-Gmail', '<handle>-GoogleDrive', etc.")
@@ -1264,14 +1286,24 @@ def _setup_remote_oauth(service_key, s):
         if not any_probe:
             print("    (couldn't probe live — use the scopes printed in STEP 2 above.)")
 
-        step(7, "Complete OAuth — one browser sign-in covers all selected apps")
-        print("  The new server(s) still need you to authorize once:")
-        for k in added_ok:
-            print(f"    claude mcp login \"{titles[k]}\"")
-        print("  (or open Claude Code and run /mcp → authenticate). The first login")
-        print("  shows Google's consent with the union of scopes — approve it once.")
+        step(7, "Authorize now (opens your browser) — one sign-in per server")
+        print("  Registration alone leaves each server at '! Needs authentication'.")
+        print("  Sign in now to finish (the old flow did this during setup too):")
+        if confirm("Run `claude mcp login` for the new server(s) now?", default=True):
+            for k in added_ok:
+                print(f"  → authorizing {titles[k]} …")
+                rc = subprocess.run(["claude", "mcp", "login", titles[k]]).returncode
+                if rc != 0:
+                    print(f"    ⚠ '{titles[k]}' didn't finish authorizing. Common causes:")
+                    print(f"       • 'client secret is invalid' → re-run and re-provide the client")
+                    print(f"       • a scope was blocked → add it to your consent screen")
+                    print(f"       retry: claude mcp login \"{titles[k]}\"")
+        else:
+            print("  Skipped. Authorize later (one browser sign-in each):")
+            for k in added_ok:
+                print(f"    claude mcp login \"{titles[k]}\"")
     hr("═")
-    print("  ✓ Done. Run `claude mcp list` to confirm; restart your session after login.")
+    print("  ✓ Done. `claude mcp list` shows status; restart your session to load the tools.")
     hr("═")
     return 0
 

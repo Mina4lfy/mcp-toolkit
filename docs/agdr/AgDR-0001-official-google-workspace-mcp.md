@@ -71,17 +71,29 @@ are one `SERVICES["google"]["apps"]` entry away.
   Cloud Console prep either way.
 - Per-tool depth may differ from the community vendors; revisit if a needed capability
   is missing (the community unified server remains a fallback).
-- **Two non-obvious facts learned in first live use (2026-07):**
-  1. **The OAuth client must be a Web application** (redirect `http://localhost:33418/callback`),
-     not a Desktop/`installed` client — a Desktop client registers only `http://localhost`
-     and fails with `redirect_uri_mismatch`. The setup now reads the client from the
-     downloaded JSON and refuses a Desktop client outright.
-  2. **Scopes are dictated by each server's OAuth metadata, not by this toolkit** —
+- **Facts learned across first live use (2026-07, PR #3 follow-ups):**
+  1. **Either OAuth client type works — Desktop (`installed`) is simplest.** An early
+     follow-up wrongly forced a Web-application client on the assumption a Desktop client
+     would fail with `redirect_uri_mismatch`. Live use disproved that: a Desktop client's
+     consent **succeeded** and the redirect (`http://localhost` → Claude Code's
+     `:33418/callback`) was accepted — Google's loopback flow allows any localhost port for
+     installed apps. So the setup accepts **both** `web` and `installed`, and recommends
+     Desktop (no redirect URI to configure — the same shape the old vendor flow used).
+  2. **The real first-failure was a corrupted stored secret.** A mis-pasted value (a file
+     *path*) was saved as `GOOGLE_OAUTH_CLIENT_SECRET` with no validation → Google returned
+     "the provided client secret is invalid" at token exchange. The setup now sanity-checks
+     the secret (`_looks_like_secret` rejects paths / whitespace / over-long values) on both
+     JSON-parse and manual entry, and on re-run offers to reuse-or-replace the stored client
+     (forcing a re-provide if the stored secret looks malformed) — closing the trap where a
+     stale/bad client was silently reused.
+  3. **Scopes are dictated by each server's OAuth metadata, not by this toolkit** —
      Claude Code requests whatever the server advertises (e.g. Gmail wants the restricted
      `https://mail.google.com/` plus `gmail.modify/compose/readonly/metadata`). The setup
      probes the live server post-registration (`claude mcp login --no-browser`) and prints
-     the authoritative scope list, so the consent screen is configured against ground truth
-     rather than a guess. (Ref: PR #3 follow-up commits.)
+     the authoritative scope list, so the consent screen is configured against ground truth.
+  4. **Auth is completed during setup again.** STEP 7 offers to run `claude mcp login`
+     per new server, restoring the old flow's "connected right after adding" UX instead of
+     leaving the server at `! Needs authentication`.
 
 ## Artifacts
 

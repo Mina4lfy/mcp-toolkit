@@ -71,6 +71,17 @@ are one `SERVICES["google"]["apps"]` entry away.
   Cloud Console prep either way.
 - Per-tool depth may differ from the community vendors; revisit if a needed capability
   is missing (the community unified server remains a fallback).
+- **Two non-obvious facts learned in first live use (2026-07):**
+  1. **The OAuth client must be a Web application** (redirect `http://localhost:33418/callback`),
+     not a Desktop/`installed` client — a Desktop client registers only `http://localhost`
+     and fails with `redirect_uri_mismatch`. The setup now reads the client from the
+     downloaded JSON and refuses a Desktop client outright.
+  2. **Scopes are dictated by each server's OAuth metadata, not by this toolkit** —
+     Claude Code requests whatever the server advertises (e.g. Gmail wants the restricted
+     `https://mail.google.com/` plus `gmail.modify/compose/readonly/metadata`). The setup
+     probes the live server post-registration (`claude mcp login --no-browser`) and prints
+     the authoritative scope list, so the consent screen is configured against ground truth
+     rather than a guess. (Ref: PR #3 follow-up commits.)
 
 ## Artifacts
 

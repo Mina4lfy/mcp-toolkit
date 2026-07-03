@@ -153,9 +153,16 @@ SERVICES = {
                     ("Gmail API", "gmail.googleapis.com"),
                     ("Gmail MCP API", "gmailmcp.googleapis.com"),
                 ],
+                # Scopes are dictated by the server's OAuth metadata (observed live
+                # from `claude mcp login --no-browser`), NOT chosen by this toolkit.
+                # These are the fallback/printed set; the setup also probes the live
+                # server post-registration and prints the authoritative list.
                 "scopes": [
-                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://mail.google.com/",
+                    "https://www.googleapis.com/auth/gmail.modify",
                     "https://www.googleapis.com/auth/gmail.compose",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.metadata",
                 ],
             },
             "drive": {
@@ -166,6 +173,7 @@ SERVICES = {
                     ("Google Drive MCP API", "drivemcp.googleapis.com"),
                 ],
                 "scopes": [
+                    "https://www.googleapis.com/auth/drive",
                     "https://www.googleapis.com/auth/drive.readonly",
                     "https://www.googleapis.com/auth/drive.file",
                 ],
@@ -178,9 +186,15 @@ SERVICES = {
                     ("Google Calendar MCP API", "calendarmcp.googleapis.com"),
                 ],
                 "scopes": [
-                    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-                    "https://www.googleapis.com/auth/calendar.events.freebusy",
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.app.created",
+                    "https://www.googleapis.com/auth/calendar.events",
                     "https://www.googleapis.com/auth/calendar.events.readonly",
+                    "https://www.googleapis.com/auth/calendar.events.freebusy",
+                    "https://www.googleapis.com/auth/calendar.events.owned",
+                    "https://www.googleapis.com/auth/calendar.events.owned.readonly",
+                    "https://www.googleapis.com/auth/calendar.events.public.readonly",
+                    "https://www.googleapis.com/auth/calendar.readonly",
                 ],
             },
         },
@@ -980,6 +994,93 @@ def _google_titles(handle, s, keys):
     return {k: f"{handle}-{s['apps'][k]['service_name']}" for k in keys}
 
 
+def _latest_client_json():
+    """Newest ~/Downloads/client_secret_*.json (the file Google Cloud Console
+    hands you when you create an OAuth client), or None."""
+    import glob
+    matches = sorted(
+        glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")),
+        key=os.path.getmtime, reverse=True,
+    )
+    return matches[0] if matches else None
+
+
+def _read_oauth_client_json(path_str, callback_port):
+    """Parse a downloaded Google OAuth client JSON → (client_id, client_secret).
+    Enforces that it's a **Web application** client (type `web`) — a Desktop
+    (`installed`) client can't register the http://localhost:<port>/callback
+    redirect Claude Code uses, so we refuse it early with a clear message.
+    Returns (client_id, client_secret) or raises ValueError."""
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        raise ValueError(f"file not found: {path}")
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        raise ValueError(f"not valid JSON: {e}")
+    if "installed" in data:
+        raise ValueError(
+            "this is a DESKTOP ('installed') OAuth client — Claude Code needs a\n"
+            "    WEB APPLICATION client with redirect http://localhost:%d/callback.\n"
+            "    In Cloud Console → Credentials → Create credentials → OAuth client ID,\n"
+            "    choose 'Web application' and add that redirect URI, then re-download."
+            % callback_port
+        )
+    blk = data.get("web")
+    if not blk or not blk.get("client_id"):
+        raise ValueError("expected a Google OAuth 'web' client JSON with a client_id")
+    want = f"http://localhost:{callback_port}/callback"
+    redirects = blk.get("redirect_uris") or []
+    if want not in redirects:
+        print(f"    ⚠ this client's redirect_uris {redirects} do not include")
+        print(f"      {want} — add it in Cloud Console or the OAuth login will fail.")
+    return blk["client_id"], blk.get("client_secret", "")
+
+
+def _prompt_oauth_client(callback_port):
+    """First-run credential collection: point at the downloaded Web-app client
+    JSON (preferred) or enter Client ID + Secret manually. Returns (id, secret)."""
+    default = _latest_client_json() or ""
+    print("  Point me at the OAuth client JSON you downloaded (Web application),")
+    print("  or leave blank to type the Client ID / Secret by hand.")
+    while True:
+        raw = prompt("Path to client JSON (blank = manual)",
+                     default=default if default else None, allow_empty=True)
+        if not raw:  # manual entry
+            cid = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
+            sec = prompt("OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
+            return cid, sec
+        try:
+            cid, sec = _read_oauth_client_json(raw, callback_port)
+            print(f"    ✓ read Web-app client {cid[:24]}… from {Path(raw).name}")
+            return cid, sec
+        except ValueError as e:
+            print(f"    ✗ {e}")
+            default = ""  # don't keep re-suggesting a bad default
+
+
+def _google_probe_scopes(title):
+    """Ask the live server what scopes it will request, by starting (but not
+    completing) the OAuth flow with `claude mcp login --no-browser` and parsing
+    the `scope` param from the emitted authorization URL. Best-effort → returns
+    a list of scope strings, or None if it couldn't be determined."""
+    try:
+        import urllib.parse as _u
+        out = subprocess.run(
+            ["claude", "mcp", "login", title, "--no-browser"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+        text = (out.stdout or "") + (out.stderr or "")
+        for tok in text.split():
+            if tok.startswith("https://accounts.google.com/"):
+                q = _u.parse_qs(_u.urlparse(tok).query)
+                scopes = q.get("scope", [""])[0].split()
+                return scopes or None
+    except Exception:
+        pass
+    return None
+
+
 def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
     """Cloud Console steps for the apps being added. First run also creates the ONE
     OAuth client; later runs print only the incremental APIs + scopes to add."""
@@ -1000,14 +1101,17 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
         print(f"""
   2c. Configure the OAuth consent screen ({s['consent_url']}):
         • User Type: External · add your Google account as a Test User
-      Add these scopes ("Scopes for Google APIs"):""")
+      Add these scopes ("Scopes for Google APIs") — these are what the servers
+      request; the setup re-confirms the exact live set after registration:""")
         for sc in scopes:
             print(f"        {sc}")
         print(f"""
   2d. Create ONE OAuth 2.0 Client ID ({s['credentials_url']}):
-        • Application type:         Web application
+        • Application type:         Web application   ← NOT "Desktop app"
         • Authorized redirect URI:  http://localhost:{callback_port}/callback
-      Copy the Client ID and Client Secret (you'll paste them next).
+      A Desktop/"installed" client registers only http://localhost and will fail
+      with redirect_uri_mismatch. Download the JSON — you can point the setup at
+      it in the next step instead of copy-pasting the Client ID / Secret.
 """)
     else:
         step(2, "Google Cloud Console — add the new app(s) to your existing setup")
@@ -1112,9 +1216,8 @@ def _setup_remote_oauth(service_key, s):
             _print_google_cloud_prep(s, to_add, first_run=False, callback_port=port)
     else:
         _print_google_cloud_prep(s, desired, first_run=True, callback_port=callback_port)
-        step(3, "Enter your OAuth client credentials")
-        client_id = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
-        secret = prompt("OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
+        step(3, "Provide your OAuth client (Web application)")
+        client_id, secret = _prompt_oauth_client(callback_port)
         step(4, "Pick a title handle for these servers")
         print("  Servers are titled '<handle>-Gmail', '<handle>-GoogleDrive', etc.")
         print("  (claude mcp names: letters/numbers/hyphens/underscores only.)")
@@ -1144,7 +1247,23 @@ def _setup_remote_oauth(service_key, s):
     print(f"\n  ✓ State saved at {final_dir} (mode 600).")
 
     if added_ok:
-        step(6, "Complete OAuth — one browser sign-in covers all selected apps")
+        # Ground-truth scopes: ask each live server what it will actually request,
+        # so the consent screen is configured with the real set (not a guess).
+        step(6, "Confirm consent-screen scopes (read live from each server)")
+        print("  These are the scopes the servers will request — every one must be added")
+        print("  to your OAuth consent screen (Testing mode: your test user can approve them):")
+        any_probe = False
+        for k in added_ok:
+            scopes = _google_probe_scopes(titles[k])
+            if scopes:
+                any_probe = True
+                print(f"    {s['apps'][k]['service_name']}:")
+                for sc in scopes:
+                    print(f"        {sc}")
+        if not any_probe:
+            print("    (couldn't probe live — use the scopes printed in STEP 2 above.)")
+
+        step(7, "Complete OAuth — one browser sign-in covers all selected apps")
         print("  The new server(s) still need you to authorize once:")
         for k in added_ok:
             print(f"    claude mcp login \"{titles[k]}\"")

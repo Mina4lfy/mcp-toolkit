@@ -58,13 +58,20 @@ The flow is **idempotent — re-run it any time to add an app, remove one, or ro
 
 1. **Converge (STEP 0–1)** — the script reads existing state (stored OAuth client + which apps are registered) and shows a **multiselect app-picker** with the registered apps pre-checked. Your pick is the desired state; the script computes `add` / `remove` / `keep`.
 2. **Cloud Console prep (STEP 2)** — computed from your selection:
-   - **First run**: create/select a project; enable each app's APIs (product API **and** its MCP API) via the printed `gcloud services enable …` one-liner (or the Console links); add the **union of scopes** for your apps to ONE OAuth consent screen (+ add yourself as a Test User); create **one** OAuth 2.0 Client ID — **Application type: Web application**, **Authorized redirect URI: `http://localhost:33418/callback`**.
+   - **First run**: create/select a project; enable each app's APIs (product API **and** its MCP API) via the printed `gcloud services enable …` one-liner (or the Console links); add the **union of scopes** for your apps to ONE OAuth consent screen (+ add yourself as a Test User); create **one** OAuth 2.0 Client ID — **Application type: Web application (NOT "Desktop app")**, **Authorized redirect URI: `http://localhost:33418/callback`**. A Desktop/"installed" client registers only `http://localhost` and fails with `redirect_uri_mismatch`.
    - **Adding apps later**: it prints only the *incremental* APIs + scopes to enable/add on the existing consent screen — the OAuth client is reused, never re-created.
-3. **Credentials (STEP 3, first run only)** — paste the Client ID and Client Secret (secret read with `getpass`). Stored at `state/google/<handle>/env` (mode `0600`) so re-runs reuse it.
+   - **Scopes are dictated by the servers, not this toolkit.** The printed list is what the endpoints request (e.g. Gmail asks for `https://mail.google.com/` + `gmail.modify/compose/readonly/metadata`); STEP 6 re-reads the *live* set from each server after registration so your consent screen is configured against ground truth.
+3. **Credentials (STEP 3, first run only)** — **point the setup at the client JSON you downloaded** (default: newest `~/Downloads/client_secret_*.json`), or leave the path blank to type the Client ID / Secret by hand. The setup **refuses a Desktop (`installed`) client** and warns if the JSON's redirect URIs don't include `http://localhost:33418/callback`. Stored at `state/google/<handle>/env` (mode `0600`) so re-runs reuse it.
 4. **Register (STEP 5)** — for each added app: `claude mcp add --transport http --scope user --client-id <ID> --client-secret --callback-port 33418 "<handle>-<App>" <url>`. The secret is passed via the `MCP_CLIENT_SECRET` env var, so it **never appears on the command line or in logs**. Deselected apps are removed with `claude mcp remove` (after a confirm).
-5. **Authorize (STEP 6)** — registration alone doesn't sign you in. Run `claude mcp login "<title>"` for each new server (or open Claude Code and use `/mcp`). The first login shows Google's consent with the union of scopes — approve it once. Then restart your session for the tools to load.
+5. **Confirm live scopes + authorize (STEP 6–7)** — the setup probes each registered server for the exact scopes it will request and prints them; make sure every one is on your consent screen. Then run `claude mcp login "<title>"` for each server (or open Claude Code and use `/mcp`). One browser sign-in covers the union of scopes — approve it once. Restart your session for the tools to load.
 
 **Removing / rotating**: re-run `./bin/setup-google.sh` and deselect an app to remove it; or, when the selection is unchanged, it offers to **rotate the OAuth client secret** (re-registers the affected servers with the new secret).
+
+**Troubleshooting "! Needs authentication" that won't clear:**
+
+- `redirect_uri_mismatch` on the consent screen → your OAuth client is a **Desktop** client (only registers `http://localhost`). Create a **Web application** client with redirect `http://localhost:33418/callback` and re-run the setup pointing at the new JSON.
+- "Access blocked" / a scope isn't granted → a scope the server requests isn't on your consent screen. Add every scope STEP 6 prints (in Testing mode your test user can approve them, including restricted ones like `https://mail.google.com/`).
+- Note: `! Needs authentication` immediately after setup is **normal** — it just means you haven't run `claude mcp login` yet, not that anything failed.
 
 **Fallback (if the CLI OAuth path is rejected)**: you can instead add each endpoint as a **custom connector in the claude.ai UI** (Settings → Connectors → Add custom connector) using the same Client ID/Secret and redirect URI `https://claude.ai/api/mcp/auth_callback`. The Cloud Console prep (APIs + scopes + one OAuth client) is identical either way. See Google's docs: <https://developers.google.com/workspace/guides/configure-mcp-servers>.
 
@@ -239,11 +246,11 @@ Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, 
 
 Each vendor's requested scopes / env vars are pulled directly from its source code (or, for provider-hosted servers, the provider's own docs), verified at pin-time:
 
-- **Google Workspace** — official Google-hosted remote MCP servers, no vendored submodule to pin. Endpoints, per-app APIs, and scopes verified against Google's docs:
+- **Google Workspace** — official Google-hosted remote MCP servers, no vendored submodule to pin. Endpoints + auth verified against Google's docs; **scopes are dictated by each server's OAuth metadata**, not chosen here, so the setup reads the authoritative set live from `claude mcp login --no-browser` after registration (the hardcoded list is a fallback/printout only):
   - Docs: <https://developers.google.com/workspace/guides/configure-mcp-servers>
   - Endpoints: `https://gmailmcp.googleapis.com/mcp/v1`, `https://drivemcp.googleapis.com/mcp/v1`, `https://calendarmcp.googleapis.com/mcp/v1`
-  - Scopes: Gmail `gmail.readonly` + `gmail.compose`; Drive `drive.readonly` + `drive.file`; Calendar `calendar.calendarlist.readonly` + `calendar.events.freebusy` + `calendar.events.readonly`
-  - Auth: one user-created OAuth 2.0 client (Web application, redirect `http://localhost:33418/callback`), registered via `claude mcp add --transport http --client-id … --client-secret --callback-port 33418`
+  - Scopes observed live (2026-07): Gmail `mail.google.com/` + `gmail.modify/compose/readonly/metadata`; Drive `drive` + `drive.readonly` + `drive.file`; Calendar `calendar` + `calendar.app.created` + `calendar.events(.readonly/.freebusy/.owned/.owned.readonly/.public.readonly)` + `calendar.readonly`
+  - Auth: one user-created OAuth 2.0 client (**Web application**, redirect `http://localhost:33418/callback` — a Desktop/`installed` client fails with `redirect_uri_mismatch`), registered via `claude mcp add --transport http --client-id … --client-secret --callback-port 33418`
 - **Atlassian (sooperset)** @ `d8bc786`:
   - `vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180` — `JIRA_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/confluence/config.py:104` — `CONFLUENCE_PERSONAL_TOKEN` is read here

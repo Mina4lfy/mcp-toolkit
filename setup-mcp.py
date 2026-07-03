@@ -1,19 +1,13 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = [
-#   "google-auth>=2.20",
-#   "google-auth-oauthlib>=1.2",
-#   "google-api-python-client>=2.100",
-# ]
+# dependencies = []
 # ///
 """
 setup-mcp.py — interactive setup for MCP servers.
 
 Usage:
-    ./setup-mcp.py google-gmail
-    ./setup-mcp.py google-calendar
-    ./setup-mcp.py google-drive
+    ./setup-mcp.py google                    # Google Workspace (official remote MCP; Gmail/Drive/Calendar)
     ./setup-mcp.py atlassian-sooperset
     ./setup-mcp.py tempo-filler
     ./setup-mcp.py azure-devops              # Microsoft official, Entra/azcli/PAT
@@ -25,15 +19,23 @@ Usage:
 
 Or use the wrapper scripts under ./bin/.
 
-Four auth flavours are supported:
+Five auth flavours are supported:
 
-  • oauth_browser  (Google services)
-    1. Prints the Google Cloud Console steps you need to do manually.
-    2. Waits for you to drop the credentials JSON into the path you'll point it at.
-    3. Delegates OAuth to the vendor's own `auth` subcommand.
-    4. Best-effort connection test against the service's identity endpoint.
-    5. Prompts for a server title (defaults to `<email-handle>-<ServiceName>`).
-    6. Registers via `claude mcp add --scope user -- npx -y <pkg>`.
+  • remote_oauth  (Google Workspace — official Google-hosted remote MCP servers)
+    An idempotent converge flow: re-running reads existing state and applies only
+    the delta (add / remove / rotate) rather than starting from scratch.
+    1. Detects existing Google state and shows which apps are already registered.
+    2. Multiselect which apps you want (Gmail / Drive / Calendar) — registered ones
+       pre-checked; the picked set is the desired state.
+    3. First run only: prints the Cloud Console steps (enable APIs, add the union of
+       scopes to ONE consent screen, create ONE Web-app OAuth client with redirect
+       http://localhost:<PORT>/callback), then collects the client id + secret.
+    4. Registers each chosen official endpoint (gmailmcp / drivemcp / calendarmcp
+       .googleapis.com) via `claude mcp add --transport http --client-id …
+       --client-secret --callback-port …`, reusing the one shared OAuth client.
+    5. Removes deselected apps via `claude mcp remove`. Persists state for re-runs.
+    6. OAuth is completed interactively afterward: `claude mcp login "<title>"`
+       (one browser sign-in covers the union of scopes for all selected apps).
 
   • api_token  (Atlassian DC, Tempo Server, Azure DevOps via Tiberriver256, GitLab)
     1. Prints where to generate the PAT in your Jira / Azure DevOps profile.
@@ -90,12 +92,6 @@ def save_cached_email(email):
     EMAIL_CACHE.write_text(email + "\n")
 
 
-def email_handle(email):
-    handle = email.split("@", 1)[0]
-    handle = re.sub(r"[^A-Za-z0-9_-]+", "-", handle).strip("-")
-    return handle or "user"
-
-
 def host_from_url(url):
     try:
         netloc = urlparse(url).netloc or url
@@ -127,92 +123,67 @@ def ado_org_from_url(url):
     return None
 
 
-def _gmail_test(svc):
-    return svc.users().getProfile(userId="me").execute().get("emailAddress")
-
-
-def _calendar_test(svc):
-    return svc.calendars().get(calendarId="primary").execute().get("id")
-
-
-def _drive_test(svc):
-    return svc.about().get(fields="user").execute().get("user", {}).get("emailAddress")
-
-
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 SERVICES = {
-    # ── Google (oauth_browser) ────────────────────────────────────────────
-    "google-gmail": {
+    # ── Google Workspace (official remote MCP, remote_oauth) ──────────────
+    # One user-created OAuth client + one consent covers every selected app.
+    # Each app is its own Google-hosted remote server → its own `claude mcp add`,
+    # but they all share the single OAuth client stored in state. See AgDR-0001.
+    # Scopes/APIs/endpoints verified against Google's docs:
+    #   https://developers.google.com/workspace/guides/configure-mcp-servers
+    "google": {
         "provider": "google",
-        "launcher": "npx",
-        "auth_kind": "oauth_browser",
-        "label": "Gmail",
-        "short": "Gmail",
-        "service_name": "Gmail",
-        "api_id": "gmail.googleapis.com",
-        "api_url": "https://console.cloud.google.com/apis/library/gmail.googleapis.com",
-        "scopes": [
-            "https://www.googleapis.com/auth/gmail.modify",
-            "https://www.googleapis.com/auth/gmail.settings.basic",
-        ],
-        "scopes_note": (
-            "gmail.modify = read + send + label/draft management\n"
-            "gmail.settings.basic = filters / forwarding / vacation responder"
-        ),
-        "npx_package": "@gongrzhe/server-gmail-autoauth-mcp",
-        "env_credentials_var": "GMAIL_OAUTH_PATH",
-        "env_token_var": "GMAIL_CREDENTIALS_PATH",
-        "token_filename": "credentials.json",
-        "test_service_name": "gmail",
-        "test_api_version": "v1",
-        "test_call": _gmail_test,
-    },
-    "google-calendar": {
-        "provider": "google",
-        "launcher": "npx",
-        "auth_kind": "oauth_browser",
-        "label": "Google Calendar",
-        "short": "Calendar",
-        "service_name": "GoogleCalendar",
-        "api_id": "calendar-json.googleapis.com",
-        "api_url": "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com",
-        "scopes": ["https://www.googleapis.com/auth/calendar"],
-        "scopes_note": (
-            "calendar = full read + write on all calendars the account owns "
-            "or has been shared into"
-        ),
-        "npx_package": "@cocal/google-calendar-mcp",
-        "env_credentials_var": "GOOGLE_OAUTH_CREDENTIALS",
-        "env_token_var": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
-        "token_filename": "tokens.json",
-        "test_service_name": "calendar",
-        "test_api_version": "v3",
-        "test_call": _calendar_test,
-    },
-    "google-drive": {
-        "provider": "google",
-        "launcher": "npx",
-        "auth_kind": "oauth_browser",
-        "label": "Google Drive",
-        "short": "Drive",
-        "service_name": "GoogleDrive",
-        "api_id": "drive.googleapis.com",
-        "api_url": "https://console.cloud.google.com/apis/library/drive.googleapis.com",
-        "scopes": ["https://www.googleapis.com/auth/drive"],
-        "scopes_note": (
-            "drive = full read + write across the entire Drive.\n"
-            "Alternatives if you want a smaller blast-radius: drive.readonly "
-            "(read-only) or drive.file (only files this MCP creates)."
-        ),
-        "npx_package": "@piotr-agier/google-drive-mcp",
-        "env_credentials_var": "GOOGLE_DRIVE_OAUTH_CREDENTIALS",
-        "env_token_var": "GOOGLE_DRIVE_MCP_TOKEN_PATH",
-        "token_filename": "tokens.json",
-        "test_service_name": "drive",
-        "test_api_version": "v3",
-        "test_call": _drive_test,
+        "launcher": "remote_http",  # HTTP transport, but OAuth (not a header bearer)
+        "auth_kind": "remote_oauth",
+        "label": "Google Workspace (official)",
+        "short": "Google",
+        "service_name": "Google",
+        "callback_port": 33418,  # fixed → OAuth client redirect http://localhost:33418/callback
+        "docs_url": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "consent_url": "https://console.cloud.google.com/apis/credentials/consent",
+        "credentials_url": "https://console.cloud.google.com/apis/credentials",
+        "apps": {
+            "gmail": {
+                "service_name": "Gmail",
+                "remote_url": "https://gmailmcp.googleapis.com/mcp/v1",
+                # (human name, gcloud service id) — enable BOTH the product API and its MCP API
+                "apis": [
+                    ("Gmail API", "gmail.googleapis.com"),
+                    ("Gmail MCP API", "gmailmcp.googleapis.com"),
+                ],
+                "scopes": [
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.compose",
+                ],
+            },
+            "drive": {
+                "service_name": "GoogleDrive",
+                "remote_url": "https://drivemcp.googleapis.com/mcp/v1",
+                "apis": [
+                    ("Google Drive API", "drive.googleapis.com"),
+                    ("Google Drive MCP API", "drivemcp.googleapis.com"),
+                ],
+                "scopes": [
+                    "https://www.googleapis.com/auth/drive.readonly",
+                    "https://www.googleapis.com/auth/drive.file",
+                ],
+            },
+            "calendar": {
+                "service_name": "GoogleCalendar",
+                "remote_url": "https://calendarmcp.googleapis.com/mcp/v1",
+                "apis": [
+                    ("Google Calendar API", "calendar-json.googleapis.com"),
+                    ("Google Calendar MCP API", "calendarmcp.googleapis.com"),
+                ],
+                "scopes": [
+                    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+                    "https://www.googleapis.com/auth/calendar.events.freebusy",
+                    "https://www.googleapis.com/auth/calendar.events.readonly",
+                ],
+            },
+        },
     },
     # ── Atlassian Data Center via sooperset/mcp-atlassian (api_token) ─────
     "atlassian-sooperset": {
@@ -688,69 +659,11 @@ VALIDATORS = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Cloud Console step-printer (Google only)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def print_cloud_steps(service_key):
-    s = SERVICES[service_key]
-    step(1, f"Google Cloud Console — set up the OAuth client for {s['label']}")
-    print(f"""
-  1a. Open <https://console.cloud.google.com/projectcreate> and create a project
-      (or select an existing personal project). Note the project_id — you'll
-      see it in the project picker at the top of every Console page.
-
-  1b. Enable the {s['label']} API:
-        {s['api_url']}
-      Click "Enable" at the top of that page (no billing required for personal use).
-
-  1c. Configure the OAuth consent screen:
-      <https://console.cloud.google.com/apis/credentials/consent>
-        • User Type:           External
-        • App name:            anything ("Personal MCP" works)
-        • User support email:  the Google account you'll authenticate with
-        • Developer contact:   same email
-      Add this scope under "Scopes for Google APIs":
-{chr(10).join(f"        {sc}" for sc in s['scopes'])}
-      Note: {s['scopes_note']}
-
-  1d. Add your Google account as a Test User on the consent screen.
-      (Publishing status = "Testing" is fine for personal use. Refresh tokens
-       last 7 days in testing mode — re-auth via this script if expired.)
-
-  1e. Create the OAuth 2.0 Client ID:
-      <https://console.cloud.google.com/apis/credentials>
-        • Click "Create Credentials" → "OAuth client ID"
-        • Application type:  Desktop app
-        • Name:              anything
-      Click "DOWNLOAD JSON" on the resulting client.
-      You'll get a file like `client_secret_<id>.apps.googleusercontent.com.json`.
-""")
-    input("  Press Enter once you have the JSON file downloaded… ")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Credentials & state-dir handling
 # ──────────────────────────────────────────────────────────────────────────────
 
-def validate_oauth_keys(path_str):
-    path = Path(path_str).expanduser()
-    if not path.exists():
-        return False, f"file not found: {path}"
-    try:
-        data = json.loads(path.read_text())
-    except Exception as e:
-        return False, f"not valid JSON: {e}"
-    if "installed" not in data and "web" not in data:
-        return False, "expected Google OAuth installed/web app format ({\"installed\": {...}})"
-    return True, None
-
-
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-
-def email_to_safe_part(email):
-    return re.sub(r"[^A-Za-z0-9]+", "-", email).strip("-")
 
 
 def validate_mcp_name(name):
@@ -776,112 +689,6 @@ def write_env_file(path, pairs):
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except Exception:
         pass
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Delegated OAuth via the vendor's own auth subcommand
-# ──────────────────────────────────────────────────────────────────────────────
-
-def run_vendor_auth(service_key, creds_path, token_path):
-    s = SERVICES[service_key]
-    env = os.environ.copy()
-    env[s["env_credentials_var"]] = str(creds_path)
-    env[s["env_token_var"]] = str(token_path)
-    cwd = creds_path.parent
-    cmd = ["npx", "-y", s["npx_package"], "auth"]
-    step(3, f"OAuth flow — delegating to vendor `{s['npx_package']} auth`")
-    print(f"  cwd: {cwd}")
-    print(f"  env: {s['env_credentials_var']}={creds_path}")
-    print(f"       {s['env_token_var']}={token_path}")
-    if _under_snap():
-        print()
-        print("  ⚠ SNAP-CONFINED ENVIRONMENT DETECTED (e.g. snap-installed VS Code).")
-        print("     The vendor will try to auto-open your browser via xdg-open, which")
-        print("     fails silently inside a snap sandbox. Watch the vendor output for")
-        print("     a line starting with 'If the browser doesn't open, visit:' — copy")
-        print("     that URL into a normal browser window OUTSIDE the snap'd app.")
-    print()
-    print("  Your browser should open. Sign in with the Google account whose")
-    print("  Drive/Calendar/Gmail you want this MCP server to access. Approve")
-    print("  the scopes you set on the consent screen.")
-    print()
-    print("  If the browser does NOT open within ~5 seconds, watch the vendor")
-    print("  output below for the fallback URL — copy/paste it manually.")
-    print()
-    try:
-        result = subprocess.run(cmd, cwd=cwd, env=env)
-    except KeyboardInterrupt:
-        print()
-        print("  Interrupted. The vendor auth process was killed.")
-        print("  Re-run this script when you're ready to retry.")
-        return False
-    if result.returncode != 0:
-        print(f"\n  ✗ Vendor auth subcommand failed with exit code {result.returncode}.")
-        print("  Common causes:")
-        print("   - 'Access blocked: <App> has not completed the Google verification process'")
-        print("     → Add your email as Test User on the OAuth consent screen.")
-        print("   - 'redirect_uri_mismatch' → confirm the OAuth client is Desktop App type.")
-        print("   - Browser didn't open AND you're inside a snap sandbox → use the")
-        print("     fallback URL the vendor printed, in a NON-snap'd browser window.")
-        return False
-    return True
-
-
-def _under_snap():
-    return any(os.environ.get(k) for k in ("SNAP", "SNAP_NAME", "SNAP_INSTANCE_NAME"))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Connection test (best-effort, Google-only)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def test_connection(service_key, token_path):
-    s = SERVICES[service_key]
-    step(4, "Connection test — calling the service's identity endpoint")
-    try:
-        from google.oauth2.credentials import Credentials
-        from googleapiclient.discovery import build
-    except ImportError:
-        print("  ⚠  google-api-python-client not available — skipping API test.")
-        print("     (Run via `uv run --script` so dependencies auto-install,")
-        print("      or pip install google-api-python-client google-auth.)")
-        return None
-
-    if not token_path.exists():
-        print(f"  ⚠  token file not found at {token_path} — vendor may use a different path.")
-        print("     Skipping API test; the next session-load will reveal whether auth worked.")
-        return None
-
-    try:
-        raw = json.loads(token_path.read_text())
-    except Exception as e:
-        print(f"  ⚠  could not parse token file: {e} — skipping API test.")
-        return None
-
-    if isinstance(raw, dict) and not raw.get("token") and not raw.get("access_token"):
-        for k in raw.keys():
-            if isinstance(raw[k], dict) and ("access_token" in raw[k] or "refresh_token" in raw[k]):
-                raw = raw[k]
-                break
-
-    try:
-        creds = Credentials(
-            token=raw.get("token") or raw.get("access_token"),
-            refresh_token=raw.get("refresh_token"),
-            token_uri=raw.get("token_uri") or "https://oauth2.googleapis.com/token",
-            client_id=raw.get("client_id"),
-            client_secret=raw.get("client_secret"),
-            scopes=raw.get("scopes") or raw.get("scope", "").split() if isinstance(raw.get("scope"), str) else raw.get("scopes"),
-        )
-        svc = build(s["test_service_name"], s["test_api_version"], credentials=creds, cache_discovery=False)
-        identity = s["test_call"](svc)
-        print(f"  ✓ API call returned: {identity}")
-        return identity
-    except Exception as e:
-        print(f"  ⚠  API test failed: {e}")
-        print("     (auth may still have worked — the failure could be a token-format")
-        print("      mismatch on our side, not the vendor's. Proceeding to registration.)")
-        return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1056,102 +863,290 @@ def _shellquote(s):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Setup — oauth_browser branch (Google services)
+# Setup — remote_oauth branch (Google Workspace, official Google-hosted remote MCP)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _setup_oauth_browser(service_key, s):
-    print_cloud_steps(service_key)
+def prompt_multiselect(question, options, preselected=None):
+    """Toggle-style multiselect. `options` is a list of (key, label). Returns the
+    selected keys in `options` order. Enter accepts the current selection."""
+    keys = [k for k, _ in options]
+    selected = set(preselected or [])
 
-    step(2, "Locate the OAuth credentials JSON you just downloaded")
-    print(f"  Default glob: ~/Downloads/client_secret_*.json")
-    default = _glob_latest_credentials() or ""
-    creds_input = prompt(
-        "Path to credentials JSON",
-        default=default if default else None,
-        validator=validate_oauth_keys,
-    )
-    creds_src = Path(creds_input).expanduser().resolve()
+    def _render():
+        for i, (k, label) in enumerate(options, 1):
+            mark = "x" if k in selected else " "
+            print(f"    {i}. [{mark}] {label}")
 
-    tmp_slug = "_pending"
-    state_dir = make_state_dir(service_key, tmp_slug)
-    creds_path = state_dir / "gcp-oauth.keys.json"
-    shutil.copy2(creds_src, creds_path)
-    token_path = state_dir / s["token_filename"]
-    print(f"  ✓ creds staged at {creds_path}")
-
-    ok = run_vendor_auth(service_key, creds_path, token_path)
-    if not ok:
-        print(f"\n  Setup aborted. State preserved at {state_dir} for inspection.")
-        return 1
-
-    detected = test_connection(service_key, token_path)
-    if detected and EMAIL_RE.match(detected):
-        email = detected
-        save_cached_email(email)
-    else:
-        cached = load_cached_email()
-        if cached:
-            email = cached
-            print(f"  ⓘ Reusing cached account email from previous setup: {email}")
+    print(f"  {question}")
+    _render()
+    print("  Type numbers (space/comma separated) to TOGGLE, 'all', 'none',")
+    print("  or press Enter to accept the current selection.")
+    while True:
+        raw = input("  selection: ").strip().lower()
+        if raw == "":
+            if not selected:
+                print("    (nothing selected — pick at least one, or type 'all')")
+                continue
+            return [k for k in keys if k in selected]
+        if raw == "all":
+            selected = set(keys)
+        elif raw == "none":
+            selected = set()
         else:
-            email = prompt(
-                "Could not auto-detect email from token. Enter it manually",
-                validator=lambda e: (EMAIL_RE.match(e) is not None, "looks invalid"),
-            )
-            save_cached_email(email)
+            toks = [t for t in re.split(r"[\s,]+", raw) if t]
+            if not all(t.isdigit() and 1 <= int(t) <= len(options) for t in toks):
+                print("    ✗ enter valid option numbers, 'all', 'none', or Enter")
+                continue
+            for t in toks:
+                k = keys[int(t) - 1]
+                selected.discard(k) if k in selected else selected.add(k)
+        _render()
 
-    step(5, "Pick a title for this MCP server in Claude Code")
-    print("  Note: claude mcp names accept letters, numbers, hyphens, and underscores only.")
-    print("  Default is <email-handle>-<ServiceName> (e.g. minaalfy8-GoogleDrive).")
-    default_title = f"{email_handle(email)}-{s['service_name']}"
-    title = prompt("Title", default=default_title, validator=validate_mcp_name)
-    final_slug = slugify(title)
-    final_dir = STATE_ROOT / service_key / final_slug
-    replacing = final_dir.exists() and final_dir != state_dir
-    if replacing:
-        print(f"  ⓘ State dir already exists for slug '{final_slug}': {final_dir}")
-        print("     This usually means re-authenticating the same account+service.")
-        if not confirm("Replace existing state with the freshly authenticated tokens?", default=True):
-            print("     Pick a different title or remove the existing state dir first.")
-            return 1
-        shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
-    if final_dir != state_dir:
-        state_dir.rename(final_dir)
-        creds_path = final_dir / "gcp-oauth.keys.json"
-        token_path = final_dir / s["token_filename"]
-        print(f"  ✓ state moved to {final_dir}")
 
-    if replacing:
-        subprocess.run(
-            ["claude", "mcp", "remove", "--scope", "user", title],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    env_pairs = {
-        s["env_credentials_var"]: str(creds_path),
-        s["env_token_var"]: str(token_path),
+# --- Google shared-OAuth-client state (one client covers every selected app) ---
+
+def _google_state_dir_existing(service_key):
+    """Most-recently-modified state dir under state/<service_key>/ with an env, or None."""
+    root = STATE_ROOT / service_key
+    if not root.is_dir():
+        return None
+    dirs = [d for d in root.iterdir() if d.is_dir() and (d / "env").exists()]
+    if not dirs:
+        return None
+    return max(dirs, key=lambda d: (d / "env").stat().st_mtime)
+
+
+def _parse_env_file(path):
+    out = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k] = v
+    return out
+
+
+def _load_google_state(service_key):
+    d = _google_state_dir_existing(service_key)
+    if not d:
+        return None
+    env = _parse_env_file(d / "env")
+    apps = [a for a in env.get("GOOGLE_APPS", "").split(",") if a]
+    return {
+        "dir": d,
+        "handle": env.get("GOOGLE_HANDLE", d.name),
+        "client_id": env.get("GOOGLE_OAUTH_CLIENT_ID", ""),
+        "client_secret": env.get("GOOGLE_OAUTH_CLIENT_SECRET", ""),
+        "callback_port": env.get("GOOGLE_OAUTH_CALLBACK_PORT", ""),
+        "apps": apps,
     }
-    ok = claude_mcp_add(
-        title=title,
-        launcher=s["launcher"],
-        package=s["npx_package"],
-        env_pairs=env_pairs,
-    )
-    if not ok:
-        return 1
 
-    if not _finalize_with_handshake(
-        title=title, final_dir=final_dir,
-        launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
-        step_num=7,
-    ):
-        return 1
 
+def _save_google_state(service_key, handle, client_id, client_secret, callback_port, apps):
+    slug = slugify(handle) or "google"
+    d = make_state_dir(service_key, slug)
+    write_env_file(d / "env", {
+        "GOOGLE_HANDLE": handle,
+        "GOOGLE_OAUTH_CLIENT_ID": client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
+        "GOOGLE_OAUTH_CALLBACK_PORT": str(callback_port),
+        "GOOGLE_APPS": ",".join(apps),
+    })
+    return d
+
+
+def _google_union_apis(s, keys):
+    seen, out = set(), []
+    for k in keys:
+        for name, api_id in s["apps"][k]["apis"]:
+            if api_id not in seen:
+                seen.add(api_id)
+                out.append((name, api_id))
+    return out
+
+
+def _google_union_scopes(s, keys):
+    seen, out = set(), []
+    for k in keys:
+        for sc in s["apps"][k]["scopes"]:
+            if sc not in seen:
+                seen.add(sc)
+                out.append(sc)
+    return out
+
+
+def _google_titles(handle, s, keys):
+    return {k: f"{handle}-{s['apps'][k]['service_name']}" for k in keys}
+
+
+def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
+    """Cloud Console steps for the apps being added. First run also creates the ONE
+    OAuth client; later runs print only the incremental APIs + scopes to add."""
+    apis = _google_union_apis(s, add_keys)
+    scopes = _google_union_scopes(s, add_keys)
+    api_ids = " ".join(api_id for _, api_id in apis)
+    if first_run:
+        step(2, "Google Cloud Console — one-time setup (shared by every Google app)")
+        print(f"""
+  2a. Open <https://console.cloud.google.com/projectcreate> and create/select a
+      personal project.
+
+  2b. Enable the APIs for the apps you picked (product API + its MCP API):
+        gcloud services enable {api_ids}
+      …or enable each from the API Library:""")
+        for name, api_id in apis:
+            print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
+        print(f"""
+  2c. Configure the OAuth consent screen ({s['consent_url']}):
+        • User Type: External · add your Google account as a Test User
+      Add these scopes ("Scopes for Google APIs"):""")
+        for sc in scopes:
+            print(f"        {sc}")
+        print(f"""
+  2d. Create ONE OAuth 2.0 Client ID ({s['credentials_url']}):
+        • Application type:         Web application
+        • Authorized redirect URI:  http://localhost:{callback_port}/callback
+      Copy the Client ID and Client Secret (you'll paste them next).
+""")
+    else:
+        step(2, "Google Cloud Console — add the new app(s) to your existing setup")
+        print("  Reusing your existing OAuth client — no new client needed.")
+        print(f"\n  Enable the added APIs:\n        gcloud services enable {api_ids}")
+        for name, api_id in apis:
+            print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
+        print(f"\n  Add these scopes to the SAME consent screen ({s['consent_url']}):")
+        for sc in scopes:
+            print(f"        {sc}")
+        print()
+    input("  Press Enter once the Console steps above are done… ")
+
+
+def _claude_mcp_add_http_oauth(title, url, client_id, callback_port, secret):
+    """Register an OAuth-protected remote MCP server. The secret is passed via the
+    MCP_CLIENT_SECRET env var so it never appears on the command line / in logs."""
+    cmd = ["claude", "mcp", "add", "--transport", "http", "--scope", "user",
+           "--client-id", client_id, "--client-secret",
+           "--callback-port", str(callback_port), title, url]
+    print(f"  Registering '{title}' → {url}")
+    print("  command:")
+    print("    " + " ".join(_shellquote(c) for c in cmd))
+    print("    (client secret passed via MCP_CLIENT_SECRET env — not shown)")
+    env = os.environ.copy()
+    env["MCP_CLIENT_SECRET"] = secret
+    result = subprocess.run(cmd, env=env)
+    if result.returncode != 0:
+        print(f"  ✗ claude mcp add failed for '{title}' (exit {result.returncode}).")
+        return False
+    print(f"  ✓ Registered '{title}'.")
+    return True
+
+
+def _google_rotate_secret(service_key, s, state):
+    step(1, "Rotate the OAuth client secret")
+    print("  Create a new secret for the SAME OAuth client in Cloud Console:")
+    print(f"    {s['credentials_url']}")
+    new_secret = prompt("New OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
+    handle = state["handle"]
+    client_id = state["client_id"]
+    port = state.get("callback_port") or s["callback_port"]
+    apps = state.get("apps", [])
+    titles = _google_titles(handle, s, apps)
+    for k in apps:
+        title = titles[k]
+        subprocess.run(["claude", "mcp", "remove", "--scope", "user", title],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _claude_mcp_add_http_oauth(title, s["apps"][k]["remote_url"], client_id, port, new_secret)
+    _save_google_state(service_key, handle, client_id, new_secret, port, apps)
+    print("\n  ✓ Secret rotated. Re-authorize each server:")
+    for k in apps:
+        print(f"    claude mcp login \"{titles[k]}\"")
+    return 0
+
+
+def _setup_remote_oauth(service_key, s):
+    apps = s["apps"]
+    callback_port = s["callback_port"]
+    state = _load_google_state(service_key)
+    registered = list(state["apps"]) if state else []
+
+    if state:
+        step(0, "Existing Google setup found — converging to your new selection")
+        cid = state.get("client_id", "")
+        print(f"  Shared OAuth client: {cid[:20]}… (reused)")
+        print(f"  Handle: {state.get('handle')}")
+        print(f"  Currently registered: {', '.join(sorted(registered)) or '(none)'}")
+    else:
+        step(0, "First-time Google Workspace setup")
+        print("  No existing Google state — this creates ONE shared OAuth client.")
+        print(f"  Docs: {s['docs_url']}")
+
+    step(1, "Choose which Google apps you want")
+    options = [(k, f"{apps[k]['service_name']}  ({apps[k]['remote_url']})") for k in apps]
+    desired = prompt_multiselect(
+        "Select the Google apps to enable:", options, preselected=registered)
+    desired_set = set(desired)
+    to_add = [k for k in apps if k in desired_set and k not in registered]
+    to_remove = [k for k in apps if k in registered and k not in desired_set]
+    keep = [k for k in apps if k in desired_set and k in registered]
+
+    if not to_add and not to_remove:
+        print("\n  Selection already matches what's registered — nothing to add/remove.")
+        if state and confirm("Rotate the OAuth client secret instead?", default=False):
+            return _google_rotate_secret(service_key, s, state)
+        print("  Done.")
+        return 0
+
+    print(f"\n  Plan:  add={to_add or '—'}   remove={to_remove or '—'}   keep={keep or '—'}")
+
+    # Resolve the shared OAuth client — reuse existing, or collect it on first run.
+    if state and state.get("client_id"):
+        client_id = state["client_id"]
+        secret = state.get("client_secret", "")
+        handle = state["handle"]
+        port = state.get("callback_port") or callback_port
+        if not secret:
+            secret = prompt("OAuth Client Secret (not found in state — re-enter)",
+                            validator=VALIDATORS["nonempty"], secret=True)
+        if to_add:
+            _print_google_cloud_prep(s, to_add, first_run=False, callback_port=port)
+    else:
+        _print_google_cloud_prep(s, desired, first_run=True, callback_port=callback_port)
+        step(3, "Enter your OAuth client credentials")
+        client_id = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
+        secret = prompt("OAuth Client Secret", validator=VALIDATORS["nonempty"], secret=True)
+        step(4, "Pick a title handle for these servers")
+        print("  Servers are titled '<handle>-Gmail', '<handle>-GoogleDrive', etc.")
+        print("  (claude mcp names: letters/numbers/hyphens/underscores only.)")
+        handle = slugify(prompt("Handle (e.g. your email prefix)",
+                                validator=VALIDATORS["nonempty"])) or "google"
+        port = callback_port
+
+    step(5, "Register / unregister servers in Claude Code")
+    titles = _google_titles(handle, s, apps)
+    added_ok = []
+    for k in to_add:
+        if _claude_mcp_add_http_oauth(titles[k], apps[k]["remote_url"], client_id, port, secret):
+            added_ok.append(k)
+    for k in to_remove:
+        title = titles[k]
+        if confirm(f"Remove '{title}' from Claude Code?", default=True):
+            subprocess.run(["claude", "mcp", "remove", "--scope", "user", title])
+            print(f"  ✓ Removed '{title}'.")
+
+    final_apps = sorted(set(keep) | set(added_ok))
+    final_dir = _save_google_state(service_key, handle, client_id, secret, port, final_apps)
+    print(f"\n  ✓ State saved at {final_dir} (mode 600).")
+
+    if added_ok:
+        step(6, "Complete OAuth — one browser sign-in covers all selected apps")
+        print("  The new server(s) still need you to authorize once:")
+        for k in added_ok:
+            print(f"    claude mcp login \"{titles[k]}\"")
+        print("  (or open Claude Code and run /mcp → authenticate). The first login")
+        print("  shows Google's consent with the union of scopes — approve it once.")
     hr("═")
-    print(f"  ✓ Done. '{title}' is registered and verified.")
-    print(f"    State:  {final_dir}")
-    print(f"    Run `claude mcp list` to confirm and restart your session.")
+    print("  ✓ Done. Run `claude mcp list` to confirm; restart your session after login.")
     hr("═")
     return 0
 
@@ -2099,8 +2094,8 @@ def cmd_setup(service_key):
     print(f"  {s['label']} MCP setup")
     hr("═")
 
-    if s["auth_kind"] == "oauth_browser":
-        return _setup_oauth_browser(service_key, s)
+    if s["auth_kind"] == "remote_oauth":
+        return _setup_remote_oauth(service_key, s)
     if s["auth_kind"] == "api_token":
         return _setup_api_token(service_key, s)
     if s["auth_kind"] == "cookie_paste":
@@ -2111,16 +2106,6 @@ def cmd_setup(service_key):
         return _setup_remote_http(service_key, s)
     print(f"unknown auth_kind '{s['auth_kind']}' for service '{service_key}'")
     return 2
-
-
-def _glob_latest_credentials():
-    import glob
-    matches = sorted(
-        glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")),
-        key=os.path.getmtime,
-        reverse=True,
-    )
-    return matches[0] if matches else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

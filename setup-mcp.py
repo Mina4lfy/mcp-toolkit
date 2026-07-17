@@ -1435,8 +1435,12 @@ def _setup_local_oauth(service_key, s, args=None):
                 print(f"  ✗ --client-secret: {e}")
                 return 2
             print(f"  ✓ read OAuth client {client_id[:24]}… from {Path(cli_secret).name}")
-            if not state:
-                _print_google_cloud_prep(s, to_add, first_run=True)
+            # Mirror the interactive paths' Console reminder: full prep for a new
+            # account, incremental (added APIs/scopes) when adding to an existing one.
+            if state:
+                _print_google_cloud_prep(s, to_add, first_run=False)
+            else:
+                _print_google_cloud_prep(s, desired, first_run=True)
         elif stored_ok and confirm(
                 f"Reuse the stored OAuth client {state['client_id'][:24]}…?", default=True):
             client_id, secret = state["client_id"], state["client_secret"]

@@ -1,6 +1,6 @@
 # mcp-toolkit
 
-Plug-and-play setup for MCP servers inside Claude Code, across seven providers: Google (Gmail / Drive / Calendar, via Google's **official hosted remote MCP servers** sharing one OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (the Google and GitHub entries are provider-hosted, so they have no submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
+Plug-and-play setup for MCP servers inside Claude Code, across seven providers: Google (Gmail / Drive / Calendar, via **local stdio community servers** behind one Desktop OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (GitHub is provider-hosted and Google runs community packages via npx, so neither has a submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
 
 ## What this gives you
 
@@ -8,7 +8,7 @@ Claude Code MCP servers across seven providers — each titled after the account
 
 | Service | Vendor (cloned in `vendor/`) | Launcher | Auth | Default scopes / env |
 | --- | --- | --- | --- | --- |
-| Google Workspace (Gmail / Drive / Calendar) | Google-hosted official remote MCP (`gmailmcp` / `drivemcp` / `calendarmcp`.googleapis.com), no local install | HTTP transport | OAuth 2.0 (one user-created client, shared consent) | Gmail: `gmail.readonly`, `gmail.compose` · Drive: `drive.readonly`, `drive.file` · Calendar: `calendar.calendarlist.readonly`, `calendar.events.freebusy`, `calendar.events.readonly` |
+| Google Workspace (Gmail / Drive / Calendar) | Local stdio community servers (`@gongrzhe/server-gmail-autoauth-mcp`, `@piotr-agier/google-drive-mcp`, `@cocal/google-calendar-mcp`) via npx | stdio | OAuth 2.0 (one Desktop client per account, per-app browser consent) | Gmail: `gmail.modify`, `gmail.settings.basic` · Drive: `drive`, `drive.file`, `docs`, `sheets`, `slides` · Calendar: `calendar` |
 | Atlassian (Jira + Confluence DC) | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) | uvx | Jira DC PAT | `JIRA_URL`, `JIRA_PERSONAL_TOKEN`; `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` (leave blank to derive from Jira — `JIRA_URL` + `/wiki` and the same PAT) |
 | Tempo (Jira time tracking) | [`tranzact/tempo-filler-mcp-server`](https://github.com/tranzact/tempo-filler-mcp-server) | npx | Jira DC PAT | `TEMPO_BASE_URL`, `TEMPO_PAT`, optional `TEMPO_DEFAULT_HOURS` |
 | LinkedIn | `vendor/linkedin-mcp/` (this toolkit) | uv (local source) | Cookie paste | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID`, optional timezone + working-hours |
@@ -42,39 +42,40 @@ Claude Code MCP servers across seven providers — each titled after the account
 ./bin/setup-gitlab.sh                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
 ```
 
-The script branches on auth flavour. The Google entry follows `remote_oauth` (official hosted endpoints + one OAuth client); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
+The script branches on auth flavour. The Google entry follows `local_oauth` (local stdio servers + one Desktop OAuth client, per-app browser consent); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
 
 ```bash
 ./bin/setup-linkedin.sh     # LinkedIn (Voyager API + Playwright)
 ```
 
-### Google Workspace — `remote_oauth` flow (official hosted, one OAuth client)
+### Google Workspace — `local_oauth` flow (local stdio servers, one Desktop OAuth client)
 
-`./bin/setup-google.sh` registers Google's **official, Google-hosted** Workspace MCP servers — Gmail (`https://gmailmcp.googleapis.com/mcp/v1`), Drive (`https://drivemcp.googleapis.com/mcp/v1`), and Calendar (`https://calendarmcp.googleapis.com/mcp/v1`). There is **no local install and no submodule** — Google hosts them and Claude Code talks over the HTTP transport with OAuth 2.0.
+`./bin/setup-google.sh` (or `./setup-mcp.py google`) registers Gmail, Drive, and Calendar as **local stdio MCP servers** — the community packages `@gongrzhe/server-gmail-autoauth-mcp`, `@piotr-agier/google-drive-mcp`, and `@cocal/google-calendar-mcp`, each launched via `npx`. They call the **standard Google product APIs** and authenticate with one user-created **Desktop** OAuth client per account.
 
-Each app is its own connected server (Google ships them per-product), but they **all share one OAuth 2.0 client and one consent** — so you authorize once and the scopes for every app you picked are granted together. This is the same shape as the Atlassian entry (one server, one PAT, two apps), applied across three hosted servers.
+> **Why not Google's hosted `*mcp.googleapis.com` remotes?** They return **"The caller does not have permission"** on every `tools/call` for our accounts — an opaque failure that is unfixable client-side and persists across accounts even with the `*mcp` APIs enabled (the same tokens return 200 OK against the product REST APIs). So the toolkit reverted from the hosted unification to the local servers, which work. See `docs/agdr/AgDR-0002-revert-google-to-local-stdio-servers.md`.
 
-The flow is **idempotent — re-run it any time to add an app, remove one, or rotate the secret**; it reads existing state and applies only the delta.
+Each app is its own server with its own on-disk token, but they **share one Desktop OAuth client** per account. The flow is **idempotent — re-run to add an app, remove one, or rotate the secret** — and can run **non-interactively** via flags:
 
-1. **Pick the account, then the apps (STEP 0–1)** — first choose **which Google account** to manage, or add a new one. **Each account is independent** — its own OAuth client and its own `<handle>-Gmail` / `<handle>-GoogleDrive` / `<handle>-GoogleCalendar` servers — so several coexist side-by-side (e.g. `minaalfy8` and `minaalfykamel`); managing or adding one never touches another. Then a **multiselect app-picker** (that account's registered apps pre-checked) computes `add` / `remove` / `keep` for it.
-2. **Cloud Console prep (STEP 2)** — computed from your selection:
-   - **First run**: create/select a project; enable each app's APIs (product API **and** its MCP API) via the printed `gcloud services enable …` one-liner (or the Console links); add the **union of scopes** for your apps to ONE OAuth consent screen (+ add yourself as a Test User); create **one** OAuth 2.0 Client ID. **Application type: Desktop app** is simplest — no redirect URI to configure, and Google accepts Claude Code's loopback sign-in on any localhost port. (A **Web application** client also works if you add the redirect URI `http://localhost:33418/callback` to it.)
-   - **Adding apps later**: it prints only the *incremental* APIs + scopes to enable/add on the existing consent screen — the OAuth client is reused, never re-created.
-   - **Scopes are dictated by the servers, not this toolkit.** The printed list is what the endpoints request (e.g. Gmail asks for `https://mail.google.com/` + `gmail.modify/compose/readonly/metadata`); STEP 5 re-reads the *live* set from each server after registration so your consent screen is configured against ground truth.
-3. **Credentials (STEP 3)** — **point the setup at the client JSON you downloaded** (default: newest `~/Downloads/client_secret_*.json`), or type `manual` to enter the Client ID / Secret by hand. Accepts **both Desktop (`installed`) and Web (`web`) clients**; the secret is sanity-checked (a path or other mis-paste is rejected, so it can't be stored as the secret). Stored at `state/google/<handle>/env` (mode `0600`) so re-runs reuse it — and on re-run the setup **offers to reuse or replace** the stored client (and forces a re-provide if the stored secret looks malformed).
-4. **Register (STEP 4)** — for each added app: `claude mcp add --transport http --scope user --client-id <ID> --client-secret --callback-port 33418 "<handle>-<App>" <url>`. The secret is passed via the `MCP_CLIENT_SECRET` env var, so it **never appears on the command line or in logs**. Deselected apps are removed with `claude mcp remove` (after a confirm).
-5. **Confirm live scopes (STEP 5) + authorize now (STEP 6)** — the setup probes each registered server for the exact scopes it will request (make sure every one is on your consent screen), then **offers to run `claude mcp login` right there** so you finish authorizing during setup (one browser sign-in per server — the same seamless flow the old vendor setup had). Decline it and it just prints the `claude mcp login "<title>"` commands to run later. Restart your session afterwards to load the tools.
+```
+./setup-mcp.py google --client-secret ./minaalfykamel_client_secret_*.json \
+                      --handle minaalfykamel --apps gmail,drive,calendar
+```
 
-**Removing / rotating**: re-run `./bin/setup-google.sh` and deselect an app to remove it; or, when the selection is unchanged, it offers to **rotate the OAuth client secret** (re-registers the affected servers with the new secret).
+1. **Pick the account, then the apps (STEP 0–1)** — choose **which Google account** to manage (or pass `--handle`); each account is independent (its own OAuth client + its own `<handle>-Gmail` / `<handle>-GoogleDrive` / `<handle>-GoogleCalendar` servers), so several coexist (e.g. `minaalfy8`, `minaalfykamel`). Then a multiselect app-picker (or `--apps gmail,drive,calendar`) computes `add` / `remove` / `keep`.
+2. **Cloud Console prep (STEP 2)** — first run prints the steps: create/select a project; enable the **product** APIs (`gmail`, `drive`/`docs`/`sheets`/`slides`, `calendar-json`.googleapis.com); add the servers' scopes to ONE consent screen (+ add yourself as a Test User); create **one OAuth Client ID of type Desktop app** — **required**, because the servers use a loopback OAuth redirect and rely on Google's loopback exemption (a Web client would need every callback port pre-registered). ⚠ While the consent screen is in **Testing**, Google expires refresh tokens after ~7 days — **publish it to Production** for durable tokens. Adding apps later prints only the *incremental* APIs + scopes.
+3. **Credentials (STEP 3)** — point the setup at the downloaded **Desktop** client JSON via `--client-secret <path>`, or the prompt (default scans the repo root's `*_client_secret_*.json` and `~/Downloads/`). Client id + secret are written to a per-app `gcp-oauth.keys.json` (created `0600`) and recorded at `state/google/<handle>/env`; re-runs offer to reuse or replace it.
+4. **Authorize + register (STEP 4)** — for each added app the setup runs the package's **`auth` subcommand**, which opens your browser for consent and writes the app's token into `state/google/<handle>/<app>/`, then registers the stdio server: `claude mcp add --scope user --env <KEYS_ENV>=… --env <TOKEN_ENV>=… -- npx -y <package>`. It also ensures the Node-24 `node-fetch`→undici preload shim and raises `MCP_TIMEOUT` in `~/.claude/settings.json` (the servers take ~10s to boot). Deselected apps are removed with `claude mcp remove` (their local token deleted too).
+5. **Restart** your Claude Code session to load the new tools.
 
-**Troubleshooting "! Needs authentication" that won't clear:**
+**Removing / rotating**: re-run and deselect an app to remove it (its stdio server + local token are dropped); when the selection is unchanged it offers to **rotate the client secret** (rewrites each `gcp-oauth.keys.json`).
 
-- **`the provided client secret is invalid`** (during `claude mcp login`, after consent succeeds) → the stored/registered client secret doesn't match the client ID. Re-run `./bin/setup-google.sh`, decline "reuse stored client", and re-provide the client (point at the correct JSON). The setup now rejects a path/garbage secret up front so this can't be stored silently.
-- **"Access blocked" / a scope isn't granted** → a scope the server requests isn't on your consent screen. Add every scope STEP 5 prints (in Testing mode your test user can approve them, including restricted ones like `https://mail.google.com/`).
-- **`redirect_uri_mismatch`** (rare — only with a Web client) → your Web client is missing the redirect `http://localhost:33418/callback`; add it, or just use a **Desktop app** client (no redirect config needed).
-- Note: `! Needs authentication` immediately after registration is **normal** — it just means the `claude mcp login` step hasn't completed yet, not that anything failed.
+**Troubleshooting:**
 
-**Fallback (if the CLI OAuth path is rejected)**: you can instead add each endpoint as a **custom connector in the claude.ai UI** (Settings → Connectors → Add custom connector) using the same Client ID/Secret and redirect URI `https://claude.ai/api/mcp/auth_callback`. The Cloud Console prep (APIs + scopes + one OAuth client) is identical either way. See Google's docs: <https://developers.google.com/workspace/guides/configure-mcp-servers>.
+- **A server shows `✘ Failed to connect` after a restart** → the ~10s `googleapis` import lost the startup race. Ensure `MCP_TIMEOUT=120000` is in `~/.claude/settings.json` `env` (the setup sets it) and `/mcp reconnect all`.
+- **A Drive/Calendar tool hangs on first call** → you have `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_DRIVE_MCP_ACCESS_TOKEN` / `GOOGLE_ACCOUNT_MODE` exported; those switch the server to a different auth mode and it ignores its token file. Unset them in the shell that launches Claude Code (the setup warns — `claude mcp add --env` can't unset an inherited var).
+- **OAuth callback port busy** (`:3000` Gmail/Drive, `:3500-3505` Calendar) → free it before authorizing (a running Drive MCP squats `:3000`).
+- **Gmail search errors "Metadata scope does not support 'q'"** → shouldn't occur on this flow (Gmail requests only `gmail.modify` + `gmail.settings.basic`); if it does, re-authorize Gmail.
+- **Tokens stop working after ~a week** → the consent screen is still in Testing mode; publish it to Production.
 
 ### LinkedIn — `cookie_paste` flow
 
@@ -196,7 +197,7 @@ mcp-toolkit/
 ├─ README.md
 ├─ setup-mcp.py               # main script (uv-runnable, PEP-723 deps)
 ├─ bin/
-│  ├─ setup-google.sh               # Google Workspace (official hosted, no submodule) — pick apps, one OAuth client
+│  ├─ setup-google.sh               # Google Workspace (local stdio community servers via npx) — pick apps, one Desktop OAuth client
 │  ├─ setup-atlassian.sh
 │  ├─ setup-tempo.sh
 │  ├─ setup-linkedin.sh
@@ -205,7 +206,7 @@ mcp-toolkit/
 │  ├─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
 │  └─ setup-gitlab.sh               # GitLab via zereight/gitlab-mcp (SaaS or self-hosted)
 ├─ vendor/                          # upstream MCP servers (git submodules) + local linkedin-mcp
-│  │                                # (Google + GitHub are provider-hosted — no submodule)
+│  │                                # (GitHub is provider-hosted; Google runs community pkgs via npx — no submodule either way)
 │  ├─ mcp-atlassian/                → sooperset/mcp-atlassian
 │  ├─ tempo-filler-mcp-server/      → tranzact/tempo-filler-mcp-server
 │  ├─ azure-devops-mcp/             → microsoft/azure-devops-mcp
@@ -221,7 +222,7 @@ mcp-toolkit/
 git clone <toolkit-repo-url> mcp-toolkit
 cd mcp-toolkit
 git submodule update --init --recursive   # for the vendored (non-hosted) servers
-./bin/setup-google.sh                      # Google Workspace — no submodule needed (hosted)
+./bin/setup-google.sh                      # Google Workspace — local stdio servers via npx (no submodule)
 ```
 
 The `state/` directory does NOT come along — that's intentional (no leaked credentials). Re-run the setup and (for Google) re-authorize with `claude mcp login` on each new machine.
@@ -237,11 +238,11 @@ rm -rf state/<service>/<slug>   # forget the OAuth state too
 
 For most services, each has its own community-maintained MCP server with deep coverage for that API (Jira JQL, Confluence pages, Tempo worklog bulk-fill, GitLab MRs, etc.). An all-in-one package would trade depth for breadth. This toolkit gives you each service's specialised vendor + a uniform setup harness.
 
-**Google is the exception (as of AgDR-0001).** It previously used three separate community vendors (`@gongrzhe` Gmail, `@cocal` Calendar, `@piotr-agier` Drive) — three npm packages, three OAuth flows, three token formats, and the reliability tax that came with them (Node-24 `node-fetch` breakage, a Drive server that squatted `:3000`). Google now ships **official, hosted** Workspace MCP servers that share **one OAuth client / one consent**, so Google moved to those: one credential to manage, provider-hosted reliability, and official-vendor trust. It's still three connected servers (Google ships them per-product), but auth and hosting are unified. See `docs/agdr/AgDR-0001-official-google-workspace-mcp.md`.
+**Google is the exception.** It uses three community vendors (`@gongrzhe` Gmail, `@piotr-agier` Drive, `@cocal` Calendar) as **local stdio servers behind one Desktop OAuth client** per account. [AgDR-0001](docs/agdr/AgDR-0001-official-google-workspace-mcp.md) briefly unified Google onto its official **hosted** Workspace MCP (one client, provider-hosted) — but those endpoints returned *"The caller does not have permission"* on every tool call for our accounts (unfixable client-side), so [AgDR-0002](docs/agdr/AgDR-0002-revert-google-to-local-stdio-servers.md) **reverted to the local servers**, which call the standard product APIs and work. The old fragmentation tax (per-app packages, Node-24 `node-fetch` breakage, a Drive server squatting `:3000`) is managed by the setup (it ensures the undici shim + raises `MCP_TIMEOUT`).
 
 ## Adding another service later
 
-Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`remote_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/`; for a provider-hosted OAuth remote (like Google), no submodule is needed. Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
+Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
 
 ## Anti-fabrication note
 

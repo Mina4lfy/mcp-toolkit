@@ -50,9 +50,11 @@ Zero. No test files tracked, no coverage config, no CI. A 2,365-line script that
 
 ### Repo activity
 
-- Commits total: 13 (all branches)
-- Commits in last 90 days: 13 (the whole history is recent)
-- Contributors: 1 (Mina Alfy)
+All figures in this subsection are as of 2026-08-08.
+
+- Commits on `main`: 13 (15 across all branches)
+- Commits in last 90 days: 13 on `main` — the whole history is recent
+- Contributors: 1 human author (git reports 3 committer identities, including an `apexyard CI` identity)
 - Open issues: 2 (`#1` Outlook MCP support, P0 · `#4` revert Google to local stdio)
 - Open PRs: 1 (`#5` — the revert implementing `#4`)
 - Merged PRs: 1 (`#3`)
@@ -94,9 +96,9 @@ This is expected for a stdlib CLI utility, not a condemnation — but it means R
 
 Consequences on a fresh clone: `git submodule update --init --recursive` — the exact command README § "Cloning the toolkit on a new machine" tells you to run — fails outright, and `vendor/` contains five empty directories. The pinned SHAs are recorded but unresolvable.
 
-**2. The LinkedIn flow ships broken.** `setup-mcp.py:260` declares `"local_pkg_dir": "vendor/linkedin-mcp"` and launches via `uv run --directory vendor/linkedin-mcp linkedin-mcp` — but `vendor/linkedin-mcp/` is neither a tracked gitlink nor present in the tree. `bin/setup-linkedin.sh`, documented in the README's quickstart *and* its Layout diagram, does not exist. The README devotes a full section and a 13-row tool table to a flow that cannot run from any clone of this repo.
+**2. The LinkedIn flow ships broken.** `setup-mcp.py:260` declares `"local_pkg_dir": "vendor/linkedin-mcp"` and launches via `uv run --directory vendor/linkedin-mcp linkedin-mcp` — but `vendor/linkedin-mcp/` is neither a tracked gitlink nor present in the tree. `bin/setup-linkedin.sh`, documented in the README's quickstart *and* its Layout diagram, does not exist. The README devotes a full section and a 14-row tool table to a flow that cannot run from any clone of this repo.
 
-**3. The anti-fabrication audit trail is unverifiable.** README § "Anti-fabrication note" grounds every claimed env var in a specific vendored source line (`vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180`, and ~12 more). Those files don't exist on a clone. The citations are the repo's core trust claim, and right now a reader cannot check a single one.
+**3. The anti-fabrication audit trail is unverifiable.** README § "Anti-fabrication note" grounds every claimed env var in a specific vendored source line (`vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180`, and 15 more — 16 citations in total). Those files don't exist on a clone. The citations are the repo's core trust claim, and right now a reader cannot check a single one.
 
 Note that risks 1–3 are one root cause with three symptoms. Locally-launched servers actually resolve from package registries at runtime (`uvx mcp-atlassian`, `npx -y @zereight/mcp-gitlab`), so `vendor/` is a pin-and-audit record rather than a runtime dependency — **except** LinkedIn, which is the one entry that genuinely launches from local source.
 
@@ -125,7 +127,7 @@ Genuinely the strong point. Zero Python dependencies. Vendored servers are pinne
 - One 2,365-line file with 59 functions and no module boundary
 - No type hints, no type checker, no linter
 - No tests on credential-handling code paths
-- Duplicated shape across the five auth flavours (`_setup_api_token`, `_setup_remote_oauth`, `_setup_cookie_paste`, `_setup_entra_login`, `_setup_remote_http`) — each ~130–280 lines with substantially similar prompt/validate/write/register sequences
+- Duplicated shape across the five auth flavours (`_setup_api_token`, `_setup_remote_oauth`, `_setup_cookie_paste`, `_setup_entra_login`, `_setup_remote_http`) — each 97–261 lines with substantially similar prompt/validate/write/register sequences
 
 ### Operational
 

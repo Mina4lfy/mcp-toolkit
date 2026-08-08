@@ -110,9 +110,9 @@ CLAUDE_MISSING_HELP = """  ✗ Claude Code CLI not found.
 
 
 def _is_executable_file(path):
-    # The execute bit on a DIRECTORY means "traversable", so os.access alone
-    # accepts a directory and defers the failure to exec time.
-    return path.is_file() and os.access(path, os.X_OK)
+    # A directory carries the execute bit too ("traversable"); os.path.isfile
+    # over Path.is_file() because it returns False, not raises, on EACCES.
+    return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
 def find_claude_bin():

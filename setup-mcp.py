@@ -109,27 +109,41 @@ CLAUDE_MISSING_HELP = """  ✗ Claude Code CLI not found.
       • Or symlink that binary onto your PATH."""
 
 
+def _is_executable_file(path):
+    # The execute bit on a DIRECTORY means "traversable", so os.access alone
+    # accepts a directory and defers the failure to exec time.
+    return path.is_file() and os.access(path, os.X_OK)
+
+
 def find_claude_bin():
     """Locate the Claude Code CLI. Returns an absolute path, or None."""
     override = os.environ.get("MCP_TOOLKIT_CLAUDE_BIN", "").strip()
     if override:
         path = Path(override).expanduser()
-        return str(path) if os.access(path, os.X_OK) else None
+        return str(path) if _is_executable_file(path) else None
 
     on_path = shutil.which("claude")
     if on_path:
         return on_path
 
     local_install = Path.home() / ".claude" / "local" / "claude"
-    if os.access(local_install, os.X_OK):
+    if _is_executable_file(local_install):
         return str(local_install)
 
     for pattern in _CLAUDE_EXTENSION_GLOBS:
-        found = [p for p in Path.home().glob(pattern) if os.access(p, os.X_OK)]
+        found = [p for p in Path.home().glob(pattern) if _is_executable_file(p)]
         if found:
             # Extension dirs accumulate old releases; take the most recent.
             return str(max(found, key=lambda p: p.stat().st_mtime))
     return None
+
+
+def _claude_missing_message():
+    override = os.environ.get("MCP_TOOLKIT_CLAUDE_BIN", "").strip()
+    if override:
+        return (f"  ✗ MCP_TOOLKIT_CLAUDE_BIN points at '{override}', which is not an "
+                f"executable file.\n\n{CLAUDE_MISSING_HELP}")
+    return CLAUDE_MISSING_HELP
 
 
 def claude_cmd(*args):
@@ -138,7 +152,7 @@ def claude_cmd(*args):
     if _CLAUDE_BIN is None:
         _CLAUDE_BIN = find_claude_bin()
     if _CLAUDE_BIN is None:
-        raise RuntimeError(CLAUDE_MISSING_HELP)
+        raise RuntimeError(_claude_missing_message())
     return [_CLAUDE_BIN, *args]
 
 
@@ -149,7 +163,7 @@ def require_claude_bin():
         _CLAUDE_BIN = find_claude_bin()
     if _CLAUDE_BIN:
         return True
-    print(CLAUDE_MISSING_HELP)
+    print(_claude_missing_message())
     return False
 
 

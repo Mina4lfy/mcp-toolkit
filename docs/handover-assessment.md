@@ -50,15 +50,17 @@ Zero. No test files tracked, no coverage config, no CI. A 2,365-line script that
 
 ### Repo activity
 
-All figures in this subsection are as of 2026-08-08.
+Measured against `main` at `d6bec64` — the state this assessment was made from. Deliberately anchored to a commit rather than dated: filing this document's own Next Steps changes the tracker counts, so a dated snapshot would be wrong the moment it was written.
 
-- Commits on `main`: 13 (15 across all branches)
-- Commits in last 90 days: 13 on `main` — the whole history is recent
-- Contributors: 1 human author (git reports 3 committer identities, including an `apexyard CI` identity)
-- Open issues: 2 (`#1` Outlook MCP support, P0 · `#4` revert Google to local stdio)
-- Open PRs: 1 (`#5` — the revert implementing `#4`)
-- Merged PRs: 1 (`#3`)
+- Commits on `main`: 13, spanning 2026-05-16 to 2026-07-03
+- All 13 land inside the last 90 days — the whole history is recent
+- Contributors: 1 human author, under 2 git identities (a personal address and a GitHub noreply address)
+- Open issues at assessment: 2 (`#1` Outlook MCP support, P0 · `#4` revert Google to local stdio). Filing the Next Steps below added `#6`–`#12`.
+- Open PRs at assessment: 1 (`#5` — the revert implementing `#4`)
+- Merged PRs at assessment: 1 (`#3`)
 - Branch protection on `main`: **not enabled**
+
+Branch counts are omitted on purpose: they move with every branch anyone pushes, including the branch carrying this document.
 
 ## Harnessability assessment
 

@@ -79,6 +79,79 @@ EMAIL_CACHE = STATE_ROOT / ".account_email"
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 URL_RE = re.compile(r"^https?://[^\s/]+(/.*)?$")
 
+# Claude Code ships either as a standalone CLI on PATH or bundled inside an
+# editor extension, where it is not on PATH at all. Resolve it once (GH-13).
+_CLAUDE_BIN = None
+
+_CLAUDE_EXTENSION_GLOBS = (
+    ".vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude",
+    ".vscode-server/extensions/anthropic.claude-code-*/resources/native-binary/claude",
+    ".vscode-insiders/extensions/anthropic.claude-code-*/resources/native-binary/claude",
+    ".cursor/extensions/anthropic.claude-code-*/resources/native-binary/claude",
+    ".windsurf/extensions/anthropic.claude-code-*/resources/native-binary/claude",
+)
+
+CLAUDE_MISSING_HELP = """  ✗ Claude Code CLI not found.
+
+    This toolkit registers servers by shelling out to `claude mcp ...`, so the
+    CLI has to be reachable. Looked in:
+      • $MCP_TOOLKIT_CLAUDE_BIN
+      • PATH
+      • ~/.claude/local/claude
+      • ~/{.vscode,.vscode-server,.vscode-insiders,.cursor,.windsurf}/extensions/
+            anthropic.claude-code-*/resources/native-binary/claude
+
+    Any one of these fixes it:
+      • Install the standalone CLI:
+          npm install -g @anthropic-ai/claude-code
+      • Already have Claude Code as an editor extension? Point at its binary:
+          export MCP_TOOLKIT_CLAUDE_BIN="$(ls -d ~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude | tail -1)"
+      • Or symlink that binary onto your PATH."""
+
+
+def find_claude_bin():
+    """Locate the Claude Code CLI. Returns an absolute path, or None."""
+    override = os.environ.get("MCP_TOOLKIT_CLAUDE_BIN", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return str(path) if os.access(path, os.X_OK) else None
+
+    on_path = shutil.which("claude")
+    if on_path:
+        return on_path
+
+    local_install = Path.home() / ".claude" / "local" / "claude"
+    if os.access(local_install, os.X_OK):
+        return str(local_install)
+
+    for pattern in _CLAUDE_EXTENSION_GLOBS:
+        found = [p for p in Path.home().glob(pattern) if os.access(p, os.X_OK)]
+        if found:
+            # Extension dirs accumulate old releases; take the most recent.
+            return str(max(found, key=lambda p: p.stat().st_mtime))
+    return None
+
+
+def claude_cmd(*args):
+    """Build an argv list for a `claude` invocation with the CLI resolved."""
+    global _CLAUDE_BIN
+    if _CLAUDE_BIN is None:
+        _CLAUDE_BIN = find_claude_bin()
+    if _CLAUDE_BIN is None:
+        raise RuntimeError(CLAUDE_MISSING_HELP)
+    return [_CLAUDE_BIN, *args]
+
+
+def require_claude_bin():
+    """Preflight so a missing CLI fails before we prompt for a credential."""
+    global _CLAUDE_BIN
+    if _CLAUDE_BIN is None:
+        _CLAUDE_BIN = find_claude_bin()
+    if _CLAUDE_BIN:
+        return True
+    print(CLAUDE_MISSING_HELP)
+    return False
+
 
 def load_cached_email():
     if not EMAIL_CACHE.exists():
@@ -821,7 +894,7 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
     print()
     print("  Rolling back the registration so the session won't load a broken server…")
     rm = subprocess.run(
-        ["claude", "mcp", "remove", "--scope", "user", title],
+        claude_cmd("mcp", "remove", "--scope", "user", title),
         capture_output=True, text=True,
     )
     if rm.returncode == 0:
@@ -834,7 +907,7 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
 
 
 def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=None, console_script=None, extra_args=None):
-    cmd = ["claude", "mcp", "add", "--scope", "user", title]
+    cmd = claude_cmd("mcp", "add", "--scope", "user", title)
     for k, v in env_pairs.items():
         if v == "":
             continue
@@ -1091,7 +1164,7 @@ def _google_probe_scopes(title):
     try:
         import urllib.parse as _u
         out = subprocess.run(
-            ["claude", "mcp", "login", title, "--no-browser"],
+            claude_cmd("mcp", "login", title, "--no-browser"),
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
         )
         text = (out.stdout or "") + (out.stderr or "")
@@ -1154,9 +1227,9 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
 def _claude_mcp_add_http_oauth(title, url, client_id, callback_port, secret):
     """Register an OAuth-protected remote MCP server. The secret is passed via the
     MCP_CLIENT_SECRET env var so it never appears on the command line / in logs."""
-    cmd = ["claude", "mcp", "add", "--transport", "http", "--scope", "user",
-           "--client-id", client_id, "--client-secret",
-           "--callback-port", str(callback_port), title, url]
+    cmd = claude_cmd("mcp", "add", "--transport", "http", "--scope", "user",
+                     "--client-id", client_id, "--client-secret",
+                     "--callback-port", str(callback_port), title, url)
     print(f"  Registering '{title}' → {url}")
     print("  command:")
     print("    " + " ".join(_shellquote(c) for c in cmd))
@@ -1187,7 +1260,7 @@ def _google_rotate_secret(service_key, s, state):
     titles = _google_titles(handle, s, apps)
     for k in apps:
         title = titles[k]
-        subprocess.run(["claude", "mcp", "remove", "--scope", "user", title],
+        subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _claude_mcp_add_http_oauth(title, s["apps"][k]["remote_url"], client_id, port, new_secret)
     _save_google_state(service_key, handle, client_id, new_secret, port, apps)
@@ -1310,7 +1383,7 @@ def _setup_remote_oauth(service_key, s):
     for k in to_remove:
         title = titles[k]
         if confirm(f"Remove '{title}' from Claude Code?", default=True):
-            subprocess.run(["claude", "mcp", "remove", "--scope", "user", title])
+            subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title))
             print(f"  ✓ Removed '{title}'.")
             removed_ok.append(k)
         else:
@@ -1345,7 +1418,7 @@ def _setup_remote_oauth(service_key, s):
         if confirm("Run `claude mcp login` for the new server(s) now?", default=True):
             for k in added_ok:
                 print(f"  → authorizing {titles[k]} …")
-                rc = subprocess.run(["claude", "mcp", "login", titles[k]]).returncode
+                rc = subprocess.run(claude_cmd("mcp", "login", titles[k])).returncode
                 if rc != 0:
                     print(f"    ⚠ '{titles[k]}' didn't finish authorizing. Common causes:")
                     print(f"       • 'client secret is invalid' → re-run and re-provide the client")
@@ -1466,7 +1539,7 @@ def _setup_api_token(service_key, s):
 
     if replacing:
         subprocess.run(
-            ["claude", "mcp", "remove", "--scope", "user", title],
+            claude_cmd("mcp", "remove", "--scope", "user", title),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -1625,7 +1698,7 @@ def _setup_cookie_paste(service_key, s):
 
     if replacing:
         subprocess.run(
-            ["claude", "mcp", "remove", "--scope", "user", title],
+            claude_cmd("mcp", "remove", "--scope", "user", title),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -1968,7 +2041,7 @@ def _setup_entra_login(service_key, s):
 
     if replacing:
         subprocess.run(
-            ["claude", "mcp", "remove", "--scope", "user", title],
+            claude_cmd("mcp", "remove", "--scope", "user", title),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -2141,7 +2214,7 @@ def _http_mcp_handshake(url, headers, timeout=30):
 
 
 def _claude_mcp_add_http(title, url, headers, step_num=5):
-    cmd = ["claude", "mcp", "add", "--transport", "http", "--scope", "user", title, url]
+    cmd = claude_cmd("mcp", "add", "--transport", "http", "--scope", "user", title, url)
     for k, v in headers.items():
         cmd += ["--header", f"{k}: {v}"]
     step(step_num, f"Registering with Claude Code as '{title}' (HTTP transport)")
@@ -2184,7 +2257,7 @@ def _finalize_with_http_handshake(title, final_dir, url, headers, step_num=None)
     print()
     print("  Rolling back the registration so the session won't load a broken server…")
     rm = subprocess.run(
-        ["claude", "mcp", "remove", "--scope", "user", title],
+        claude_cmd("mcp", "remove", "--scope", "user", title),
         capture_output=True, text=True,
     )
     if rm.returncode == 0:
@@ -2267,7 +2340,7 @@ def _setup_remote_http(service_key, s):
 
     if replacing:
         subprocess.run(
-            ["claude", "mcp", "remove", "--scope", "user", title],
+            claude_cmd("mcp", "remove", "--scope", "user", title),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -2304,6 +2377,11 @@ def cmd_setup(service_key):
     print(f"  {s['label']} MCP setup")
     hr("═")
 
+    # Fail here rather than mid-flow, so a missing CLI never costs you a
+    # pasted credential (GH-13).
+    if not require_claude_bin():
+        return 1
+
     if s["auth_kind"] == "remote_oauth":
         return _setup_remote_oauth(service_key, s)
     if s["auth_kind"] == "api_token":
@@ -2324,7 +2402,9 @@ def cmd_setup(service_key):
 
 def cmd_doctor():
     print("\n=== Registered MCP servers (per `claude mcp list`) ===")
-    subprocess.run(["claude", "mcp", "list"])
+    if require_claude_bin():
+        print(f"  CLI: {_CLAUDE_BIN}")
+        subprocess.run(claude_cmd("mcp", "list"))
     print("\n=== Local state under ./state/ ===")
     if not STATE_ROOT.exists():
         print("  (none — run a setup-* command first)")

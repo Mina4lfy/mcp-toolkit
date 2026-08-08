@@ -23,7 +23,13 @@ Claude Code MCP servers across seven providers — each titled after the account
 
 ## Prerequisites
 
-- `claude` CLI on PATH (the Claude Code binary).
+- The Claude Code CLI. The toolkit finds it automatically, checking in order: `$MCP_TOOLKIT_CLAUDE_BIN`, then `PATH`, then `~/.claude/local/claude`, then the binary bundled inside a VS Code / Cursor / Windsurf Claude Code extension. If Claude Code is installed **only** as an editor extension the CLI is not on `PATH`, and the toolkit picks it up from the extension bundle — no setup needed. To point at a specific build:
+
+  ```bash
+  export MCP_TOOLKIT_CLAUDE_BIN="$(ls -d ~/.vscode/extensions/anthropic.claude-code-*/resources/native-binary/claude | tail -1)"
+  ```
+
+  Run `./setup-mcp.py doctor` to see which binary it resolved.
 - `uv` on PATH (the Python script uses PEP-723 inline metadata with `uv run --script`; auto-installs deps in an ephemeral venv). Also provides `uvx` used to launch the Atlassian server.
 - `npx` on PATH (Node.js 18+).
 - For Google: a Google account and access to Google Cloud Console (to enable APIs, add scopes, and create ONE OAuth 2.0 client); a desktop environment with a default browser (the `claude mcp login` OAuth step opens a browser tab). `gcloud` is optional (the setup prints a `gcloud services enable …` one-liner, but you can enable the APIs from the Console UI instead).

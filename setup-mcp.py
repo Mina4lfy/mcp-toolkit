@@ -67,6 +67,7 @@ so the whole toolkit stays portable. The repo's .gitignore excludes ./state/.
 
 import argparse
 import base64
+import collections
 import json
 import os
 import re
@@ -74,6 +75,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -215,18 +217,33 @@ def ado_org_from_url(url):
     return None
 
 
+_CLOUD_SUFFIXES = (
+    ".atlassian.net",
+    ".jira.com",
+    ".jira-dev.com",
+    ".atlassian.com",
+    ".atlassian-us-gov.net",      # FedRAMP
+    ".atlassian-us-gov-mod.net",  # FedRAMP Moderate
+)
+
+_PRIVATE_HOST_RE = re.compile(r"^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)")
+
+
 def is_atlassian_cloud_url(url):
     """Cloud (Basic: email + API token) vs Server/DC (Bearer: PAT) branches on this.
 
-    Mirrors vendor/mcp-atlassian's utils/urls.py: .atlassian.net / .jira.com
-    hosts are Cloud; everything else — including localhost, IPs, and private
-    hosts — is Server/DC (GH-17).
+    Must agree with vendor/mcp-atlassian's utils/urls.py @ d8bc786 — if this says
+    DC where the vendor says Cloud, setup collects a PAT the server will never
+    use and GH-17 reproduces. Suffix match (not `in`) so
+    evil-atlassian.net.attacker.com stays DC.
     """
     try:
         hostname = (urlparse(url).hostname or "").lower()
-    except Exception:
+    except ValueError:
         return False
-    return hostname.endswith(".atlassian.net") or hostname.endswith(".jira.com")
+    if hostname == "localhost" or _PRIVATE_HOST_RE.match(hostname):
+        return False
+    return hostname == "api.atlassian.com" or hostname.endswith(_CLOUD_SUFFIXES)
 
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -894,17 +911,24 @@ def write_env_file(path, pairs):
 # Claude Code registration
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _drain(proc):
-    """Kill the server and return its stderr tail. Killing first is what keeps
-    the read from blocking when the process is hung rather than crashed."""
+def _kill_quietly(proc):
     try:
         proc.kill()
     except Exception:
         pass
+
+
+def _stderr_pump(stream, sink):
+    """Drain the server's stderr continuously into a bounded buffer.
+
+    Without this, a server that writes more than the ~64 KiB pipe buffer blocks
+    forever while we're blocked reading stdout — a deadlock, not a slow start.
+    """
     try:
-        return proc.stderr.read() or ""
+        for line in stream:
+            sink.append(line)
     except Exception:
-        return ""
+        pass
 
 
 def _build_spawn_command(launcher, package, local_dir=None, console_script=None, extra_args=None):
@@ -927,7 +951,7 @@ def _build_spawn_command(launcher, package, local_dir=None, console_script=None,
     return cmd
 
 
-def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90, verify_tool=None):
+def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90, verify_tool=None, declared_env=None):
     """Spawn the just-registered MCP server and drive an initialize +
     tools/list JSON-RPC round-trip over stdio. Returns (ok, message, tool_count).
 
@@ -949,6 +973,12 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     for k, v in env_pairs.items():
         if v != "":
             env[k] = v
+    # An exported JIRA_* in the operator's shell would otherwise be inherited and
+    # silently satisfy an auth mode this config didn't ask for, so the probe would
+    # pass on credentials the registered server won't have (GH-17).
+    for k in (declared_env or ()):
+        if k not in env_pairs or env_pairs[k] == "":
+            env.pop(k, None)
 
     # Request/response must be interleaved, not batched: writing every request
     # then closing stdin makes the server exit on EOF before it answers
@@ -963,15 +993,34 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     except Exception as e:
         return False, f"failed to spawn server: {e}", 0
 
-    deadline = time.monotonic() + timeout
+    _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE|LI_AT|JSESSIONID", re.I)
+    secrets = [v for k, v in env_pairs.items()
+               if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
+
+    def _redact(text):
+        """A server can echo its own credential into stderr; never surface it."""
+        for sec in secrets:
+            text = text.replace(sec, "***")
+        return text
+
+    stderr_tail = collections.deque(maxlen=200)
+    threading.Thread(target=_stderr_pump, args=(proc.stderr, stderr_tail), daemon=True).start()
+    # readline() blocks with no deadline of its own, so the timeout has to come
+    # from killing the process: that closes stdout and readline() returns ''.
+    watchdog = threading.Timer(timeout, _kill_quietly, args=(proc,))
+    watchdog.daemon = True
+    watchdog.start()
+
+    def _tail():
+        return "\n".join("".join(stderr_tail).splitlines()[-12:])
 
     def _send(payload):
         proc.stdin.write(json.dumps(payload) + "\n")
         proc.stdin.flush()
 
     def _await(want_id):
-        """Read until the response with this id arrives, or the deadline passes."""
-        while time.monotonic() < deadline:
+        """Read until this id answers, or the watchdog kills the server."""
+        while True:
             line = proc.stdout.readline()
             if not line:
                 return None
@@ -984,7 +1033,9 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
                 continue
             if msg.get("id") == want_id:
                 return msg
-        return None
+
+    def _timed_out():
+        return not watchdog.is_alive()
 
     try:
         _send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
@@ -992,10 +1043,14 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
             "clientInfo": {"name": "setup-mcp.py", "version": "0"}}})
         init = _await(1)
         if init is None or "result" not in init:
-            tail = "\n".join((_drain(proc) or "").splitlines()[-12:])
+            if _timed_out():
+                return False, (
+                    f"server didn't respond within {timeout}s "
+                    "(first-run npm/uvx install can be slow — retry once)"
+                ), 0
             return False, (
                 "server didn't complete initialize.\n"
-                "    stderr tail:\n      " + tail.replace("\n", "\n      ")
+                "    stderr tail:\n      " + _redact(_tail()).replace("\n", "\n      ")
             ), 0
         sinfo = init["result"].get("serverInfo") or {}
         server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
@@ -1004,7 +1059,8 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         _send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         listed = _await(2)
         if listed is None:
-            return False, f"initialize OK ({server_info}) but tools/list never answered", 0
+            why = f"timed out after {timeout}s" if _timed_out() else "never answered"
+            return False, f"initialize OK ({server_info}) but tools/list {why}", 0
         if "error" in listed:
             return False, f"initialize OK ({server_info}) but tools/list errored: {listed['error']}", 0
         tools_count = len(listed.get("result", {}).get("tools") or [])
@@ -1019,22 +1075,31 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         probed = _await(3)
         # Fail closed: a probe that never answered is not a probe that passed.
         if probed is None:
-            return False, f"auth probe ({verify_tool['name']}) never answered", tools_count
+            why = f"timed out after {timeout}s" if _timed_out() else "never answered"
+            return False, f"auth probe ({verify_tool['name']}) {why}", tools_count
         verify_ok, verify_msg = _read_tool_call_result(probed)
         if not verify_ok:
-            return False, f"auth probe ({verify_tool['name']}) failed: {verify_msg}", tools_count
+            return False, (
+                f"auth probe ({verify_tool['name']}) failed: {_redact(verify_msg)}\n"
+                "      (a privacy-restricted account lookup can also cause this — "
+                "if the credentials are known good, re-run and skip the probe)"
+            ), tools_count
         return True, (
             f"{server_info} responded — {tools_count} tools exposed; "
             f"auth probe OK ({verify_tool['name']})"
         ), tools_count
-    except BrokenPipeError:
-        tail = "\n".join((_drain(proc) or "").splitlines()[-12:])
-        return False, "server closed its input early.\n    stderr tail:\n      " + tail.replace("\n", "\n      "), 0
+    except OSError as e:
+        # BrokenPipe and friends: the server died mid-exchange.
+        return False, (
+            f"server closed the connection mid-exchange ({e}).\n"
+            "    stderr tail:\n      " + _redact(_tail()).replace("\n", "\n      ")
+        ), 0
+    except Exception as e:
+        # Never let a parse bug skip the caller's rollback.
+        return False, f"verification error: {type(e).__name__}: {e}", 0
     finally:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        watchdog.cancel()
+        _kill_quietly(proc)
 
 
 def _read_tool_call_result(msg):
@@ -1063,7 +1128,7 @@ def _read_tool_call_result(msg):
     return True, text[:200]
 
 
-def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None, verify_tool=None):
+def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None, verify_tool=None, declared_env=None):
     """Run the post-registration handshake test (plus an optional real
     auth-probe tool call). On failure, roll back the `claude mcp add` so
     Claude Code doesn't carry a broken handle, and return False. State dir
@@ -1075,7 +1140,7 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
     ok, msg, _ = _mcp_handshake_test(
         launcher=launcher, package=package, env_pairs=env_pairs,
         extra_args=extra_args, local_dir=local_dir, console_script=console_script,
-        verify_tool=verify_tool,
+        verify_tool=verify_tool, declared_env=declared_env,
     )
     if ok:
         print(f"  ✓ {msg}")
@@ -1906,6 +1971,7 @@ def _setup_api_token(service_key, s):
         title=title, final_dir=final_dir,
         launcher=s["launcher"], package=package, env_pairs=values,
         step_num=6, verify_tool=verify_tool,
+        declared_env=[spec["name"] for spec in s["env_vars"]],
     ):
         return 1
 

@@ -1005,8 +1005,17 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         return False, f"failed to spawn server: {e}", 0
 
     _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE|LI_AT|JSESSIONID", re.I)
-    secrets = [v for k, v in env_pairs.items()
-               if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
+    _raw = [v for k, v in env_pairs.items()
+            if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
+    # Basic auth puts base64(user:token) on the wire, so the token never appears
+    # verbatim for a Cloud server to echo — redact the encoded forms too.
+    secrets = list(_raw)
+    for sec in _raw:
+        secrets.append(base64.b64encode(sec.encode()).decode())
+        for other in env_pairs.values():
+            if isinstance(other, str) and other and other not in _raw:
+                secrets.append(base64.b64encode(f"{other}:{sec}".encode()).decode())
+    secrets.sort(key=len, reverse=True)
 
     def _redact(text):
         """A server can echo its own credential into stderr; never surface it."""
@@ -1023,7 +1032,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     watchdog.start()
 
     def _tail():
-        return "\n".join("".join(stderr_tail).splitlines()[-12:])[-4000:]
+        return _redact("\n".join("".join(stderr_tail).splitlines()[-12:]))[-4000:]
 
     def _send(payload):
         proc.stdin.write(json.dumps(payload) + "\n")
@@ -1061,7 +1070,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
                 ), 0
             return False, (
                 "server didn't complete initialize.\n"
-                "    stderr tail:\n      " + _redact(_tail()).replace("\n", "\n      ")
+                "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
             ), 0
         sinfo = init["result"].get("serverInfo") or {}
         server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
@@ -1103,7 +1112,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         # BrokenPipe and friends: the server died mid-exchange.
         return False, (
             f"server closed the connection mid-exchange ({e}).\n"
-            "    stderr tail:\n      " + _redact(_tail()).replace("\n", "\n      ")
+            "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
         ), 0
     except Exception as e:
         # Never let a parse bug skip the caller's rollback.

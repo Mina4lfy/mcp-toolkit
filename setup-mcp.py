@@ -72,6 +72,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -912,10 +913,19 @@ def write_env_file(path, pairs):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _kill_quietly(proc):
+    """Kill the whole process group, not just the launcher.
+
+    npx/uvx/uv-run exec the real server as a grandchild that inherits stdout, so
+    killing only the direct child leaves that pipe open and readline() blocks
+    forever — and leaves a live server holding the operator's credentials.
+    """
     try:
-        proc.kill()
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
     except Exception:
-        pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 def _stderr_pump(stream, sink):
@@ -987,6 +997,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=env, bufsize=1,
+            start_new_session=True,
         )
     except FileNotFoundError:
         return False, f"launcher binary not found on PATH: '{cmd[0]}'", 0
@@ -1012,7 +1023,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     watchdog.start()
 
     def _tail():
-        return "\n".join("".join(stderr_tail).splitlines()[-12:])
+        return "\n".join("".join(stderr_tail).splitlines()[-12:])[-4000:]
 
     def _send(payload):
         proc.stdin.write(json.dumps(payload) + "\n")
@@ -1062,7 +1073,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
             why = f"timed out after {timeout}s" if _timed_out() else "never answered"
             return False, f"initialize OK ({server_info}) but tools/list {why}", 0
         if "error" in listed:
-            return False, f"initialize OK ({server_info}) but tools/list errored: {listed['error']}", 0
+            return False, f"initialize OK ({server_info}) but tools/list errored: {_redact(str(listed['error']))}", 0
         tools_count = len(listed.get("result", {}).get("tools") or [])
         if tools_count == 0:
             return False, f"initialize OK ({server_info}) but the server exposed 0 tools", 0
@@ -1096,7 +1107,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         ), 0
     except Exception as e:
         # Never let a parse bug skip the caller's rollback.
-        return False, f"verification error: {type(e).__name__}: {e}", 0
+        return False, _redact(f"verification error: {type(e).__name__}: {e}"), 0
     finally:
         watchdog.cancel()
         _kill_quietly(proc)
@@ -2133,6 +2144,7 @@ def _setup_cookie_paste(service_key, s):
         launcher=s["launcher"], package=s["local_pkg_dir"], env_pairs=env_pairs,
         local_dir=local_dir, console_script=s.get("local_pkg_console_script"),
         step_num=6,
+        declared_env=[spec["name"] for spec in s.get("env_vars", [])],
     ):
         return 1
 
@@ -2474,6 +2486,7 @@ def _setup_entra_login(service_key, s):
         title=title, final_dir=final_dir,
         launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
         extra_args=extra_args, step_num=7,
+        declared_env=[spec["name"] for spec in s.get("env_vars", [])],
     ):
         return 1
 

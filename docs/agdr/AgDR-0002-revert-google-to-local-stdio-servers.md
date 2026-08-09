@@ -51,7 +51,8 @@ produces working Google MCP tools today. `setup-mcp.py`'s Google flow now
 1. Reads a **Desktop** OAuth client from a JSON path — interactively or via the
    new **`--client-secret <path>`** flag (plus `--handle` / `--apps` for a fully
    non-interactive per-account run). The default now also scans the repo root for
-   a dropped `*_client_secret_*.json`.
+   a dropped `*client_secret*.json` — matching the `.gitignore` glob, which omits
+   the leading underscore so Google Console's own download filename is covered.
 2. Per selected app: writes `state/google/<slug>/<app>/gcp-oauth.keys.json`, runs
    the package's **`auth` subcommand** (browser consent → per-app token file),
    then registers the local stdio server with `claude mcp add … -- npx -y <pkg>`.

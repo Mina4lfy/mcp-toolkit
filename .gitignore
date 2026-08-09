@@ -14,8 +14,10 @@ build/
 .idea/
 *.swp
 
-# MCP Toolkit.
-*_client_secret*.json
+# MCP Toolkit. No leading underscore: Google Console downloads these as
+# client_secret_<id>.apps.googleusercontent.com.json, and _latest_client_json()
+# scans the repo root for *client_secret*.json — the ignore must cover both.
+*client_secret*.json
 
 # Vendor libraries.
 vendor/

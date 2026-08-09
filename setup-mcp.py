@@ -1115,9 +1115,9 @@ def _google_titles(handle, s, keys):
 
 def _latest_client_json():
     """Newest OAuth client-secret JSON to offer as the default. Checks the repo
-    root (drop a `*_client_secret_*.json` there, gitignored) AND the file Google
-    Cloud Console hands you in ~/Downloads/client_secret_*.json. Returns None if
-    neither exists."""
+    root (drop a `*client_secret*.json` there — .gitignore covers that glob) AND
+    the file Google Cloud Console hands you in ~/Downloads/client_secret_*.json.
+    Returns None if neither exists."""
     import glob
     matches = (glob.glob(str(REPO_ROOT / "*client_secret*.json"))
                + glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")))

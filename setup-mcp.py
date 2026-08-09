@@ -21,21 +21,25 @@ Or use the wrapper scripts under ./bin/.
 
 Five auth flavours are supported:
 
-  • remote_oauth  (Google Workspace — official Google-hosted remote MCP servers)
+  • local_oauth  (Google Workspace — LOCAL stdio community MCP servers)
     An idempotent converge flow: re-running reads existing state and applies only
     the delta (add / remove / rotate) rather than starting from scratch.
     1. Detects existing Google state and shows which apps are already registered.
     2. Multiselect which apps you want (Gmail / Drive / Calendar) — registered ones
-       pre-checked; the picked set is the desired state.
-    3. First run only: prints the Cloud Console steps (enable APIs, add the union of
-       scopes to ONE consent screen, create ONE Web-app OAuth client with redirect
-       http://localhost:<PORT>/callback), then collects the client id + secret.
-    4. Registers each chosen official endpoint (gmailmcp / drivemcp / calendarmcp
-       .googleapis.com) via `claude mcp add --transport http --client-id …
-       --client-secret --callback-port …`, reusing the one shared OAuth client.
+       pre-checked; the picked set is the desired state (or pass --apps gmail,drive).
+    3. First run only: prints the Cloud Console steps (enable the product APIs, add
+       the scopes to ONE consent screen, create ONE **Desktop** OAuth client), then
+       reads the client id + secret from the downloaded JSON (--client-secret PATH).
+    4. Per app: writes a Desktop gcp-oauth.keys.json, runs the package's `auth`
+       subcommand (browser consent → per-app token file), then registers the local
+       stdio server via `claude mcp add --scope user --env … -- npx -y <package>`.
+       Also sets MCP_TIMEOUT + the Node-24 fetch shim so the slow servers connect.
     5. Removes deselected apps via `claude mcp remove`. Persists state for re-runs.
-    6. OAuth is completed interactively afterward: `claude mcp login "<title>"`
-       (one browser sign-in covers the union of scopes for all selected apps).
+
+    (Why local, not Google's hosted *mcp.googleapis.com remotes: those return "The
+     caller does not have permission" on every tools/call for our accounts —
+     unfixable client-side. The community servers use the standard product APIs,
+     which work. Reverses the hosted unification. See AgDR-0002.)
 
   • api_token  (Atlassian DC, Tempo Server, Azure DevOps via Tiberriver256, GitLab)
     1. Prints where to generate the PAT in your Jira / Azure DevOps profile.
@@ -214,74 +218,91 @@ NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 SERVICES = {
-    # ── Google Workspace (official remote MCP, remote_oauth) ──────────────
-    # One user-created OAuth client + one consent covers every selected app.
-    # Each app is its own Google-hosted remote server → its own `claude mcp add`,
-    # but they all share the single OAuth client stored in state. See AgDR-0001.
-    # Scopes/APIs/endpoints verified against Google's docs:
-    #   https://developers.google.com/workspace/guides/configure-mcp-servers
+    # ── Google Workspace (LOCAL stdio community servers, local_oauth) ─────
+    # One user-created **Desktop** OAuth client + one browser consent PER APP.
+    # Each selected Google app runs as its OWN local stdio Node MCP server
+    # (community npm package), authenticated by running that package's `auth`
+    # subcommand once — it opens the browser, you consent, and it writes a
+    # per-app token file into ./state/google/<slug>/<app>/.
+    #
+    # WHY LOCAL, not Google's hosted *mcp.googleapis.com remotes: the hosted
+    # servers return "The caller does not have permission" on every tools/call
+    # for our accounts — an unfixable-client-side failure that persists across
+    # accounts even with the *mcp APIs enabled. The community servers below
+    # call the STANDARD product APIs, which work. This reverses the hosted
+    # unification (AgDR-0001 / GH-3). See AgDR-0002.
     "google": {
         "provider": "google",
-        "launcher": "remote_http",  # HTTP transport, but OAuth (not a header bearer)
-        "auth_kind": "remote_oauth",
-        "label": "Google Workspace (official)",
+        "launcher": "npx",              # local stdio Node servers, one per app
+        "auth_kind": "local_oauth",     # per-app `auth` subcommand → token file
+        "label": "Google Workspace (local stdio)",
         "short": "Google",
         "service_name": "Google",
-        "callback_port": 33418,  # fixed → OAuth client redirect http://localhost:33418/callback
-        "docs_url": "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        # The OAuth client MUST be a **Desktop app** ("installed") — every local
+        # server uses a loopback redirect and relies on Google's loopback
+        # exemption (any http://localhost:<port> is accepted, no pre-registration).
+        "oauth_client_type": "desktop",
+        "docs_url": "https://developers.google.com/workspace/guides/create-credentials",
         "consent_url": "https://console.cloud.google.com/apis/credentials/consent",
         "credentials_url": "https://console.cloud.google.com/apis/credentials",
         "apps": {
             "gmail": {
                 "service_name": "Gmail",
-                "remote_url": "https://gmailmcp.googleapis.com/mcp/v1",
-                # (human name, gcloud service id) — enable BOTH the product API and its MCP API
+                "package": "@gongrzhe/server-gmail-autoauth-mcp",
+                "keys_env": "GMAIL_OAUTH_PATH",        # → gcp-oauth.keys.json
+                "token_env": "GMAIL_CREDENTIALS_PATH", # → token file it writes
+                "token_file": "credentials.json",
+                "auth_ports": [3000],                  # hardcoded loopback callback
                 "apis": [
                     ("Gmail API", "gmail.googleapis.com"),
-                    ("Gmail MCP API", "gmailmcp.googleapis.com"),
                 ],
-                # Scopes are dictated by the server's OAuth metadata (observed live
-                # from `claude mcp login --no-browser`), NOT chosen by this toolkit.
-                # These are the fallback/printed set; the setup also probes the live
-                # server post-registration and prints the authoritative list.
+                # Scopes the server's OWN `auth` flow requests. Note: NO
+                # gmail.metadata (which the hosted server requested and which
+                # breaks Gmail search — "Metadata scope does not support 'q'").
                 "scopes": [
-                    "https://mail.google.com/",
                     "https://www.googleapis.com/auth/gmail.modify",
-                    "https://www.googleapis.com/auth/gmail.compose",
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/gmail.metadata",
+                    "https://www.googleapis.com/auth/gmail.settings.basic",
                 ],
             },
             "drive": {
                 "service_name": "GoogleDrive",
-                "remote_url": "https://drivemcp.googleapis.com/mcp/v1",
+                # Also exposes Docs/Sheets/Slides/Calendar tools (120+ Workspace tools).
+                "package": "@piotr-agier/google-drive-mcp",
+                "keys_env": "GOOGLE_DRIVE_OAUTH_CREDENTIALS",
+                "token_env": "GOOGLE_DRIVE_MCP_TOKEN_PATH",
+                "token_file": "tokens.json",
+                "auth_ports": [3000, 3001, 3002, 3003, 3004],
                 "apis": [
                     ("Google Drive API", "drive.googleapis.com"),
-                    ("Google Drive MCP API", "drivemcp.googleapis.com"),
+                    ("Google Docs API", "docs.googleapis.com"),
+                    ("Google Sheets API", "sheets.googleapis.com"),
+                    ("Google Slides API", "slides.googleapis.com"),
                 ],
                 "scopes": [
                     "https://www.googleapis.com/auth/drive",
-                    "https://www.googleapis.com/auth/drive.readonly",
                     "https://www.googleapis.com/auth/drive.file",
+                    "https://www.googleapis.com/auth/drive.readonly",
+                    "https://www.googleapis.com/auth/documents",
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/presentations",
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "openid",
                 ],
             },
             "calendar": {
                 "service_name": "GoogleCalendar",
-                "remote_url": "https://calendarmcp.googleapis.com/mcp/v1",
+                "package": "@cocal/google-calendar-mcp",
+                "keys_env": "GOOGLE_OAUTH_CREDENTIALS",
+                "token_env": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
+                "token_file": "tokens.json",
+                "auth_ports": [3500, 3501, 3502, 3503, 3504, 3505],
                 "apis": [
                     ("Google Calendar API", "calendar-json.googleapis.com"),
-                    ("Google Calendar MCP API", "calendarmcp.googleapis.com"),
                 ],
                 "scopes": [
                     "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.app.created",
-                    "https://www.googleapis.com/auth/calendar.events",
-                    "https://www.googleapis.com/auth/calendar.events.readonly",
-                    "https://www.googleapis.com/auth/calendar.events.freebusy",
-                    "https://www.googleapis.com/auth/calendar.events.owned",
-                    "https://www.googleapis.com/auth/calendar.events.owned.readonly",
-                    "https://www.googleapis.com/auth/calendar.events.public.readonly",
-                    "https://www.googleapis.com/auth/calendar.readonly",
                 ],
             },
         },
@@ -964,7 +985,7 @@ def _shellquote(s):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Setup — remote_oauth branch (Google Workspace, official Google-hosted remote MCP)
+# Setup — local_oauth branch (Google Workspace, LOCAL stdio community MCP servers)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def prompt_multiselect(question, options, preselected=None):
@@ -1093,13 +1114,15 @@ def _google_titles(handle, s, keys):
 
 
 def _latest_client_json():
-    """Newest ~/Downloads/client_secret_*.json (the file Google Cloud Console
-    hands you when you create an OAuth client), or None."""
+    """Newest OAuth client-secret JSON to offer as the default. Checks the repo
+    root (drop a `*client_secret*.json` there — .gitignore covers that glob) AND
+    the file Google Cloud Console hands you in ~/Downloads/client_secret_*.json.
+    Returns None if neither exists."""
     import glob
-    matches = sorted(
-        glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")),
-        key=os.path.getmtime, reverse=True,
-    )
+    matches = (glob.glob(str(REPO_ROOT / "*client_secret*.json"))
+               + glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")))
+    matches = [m for m in matches if os.path.isfile(m)]
+    matches.sort(key=os.path.getmtime, reverse=True)
     return matches[0] if matches else None
 
 
@@ -1114,13 +1137,12 @@ def _looks_like_secret(v):
     return 8 <= len(v) <= 60
 
 
-def _read_oauth_client_json(path_str, callback_port):
+def _read_oauth_client_json(path_str):
     """Parse a downloaded Google OAuth client JSON → (client_id, client_secret).
-    Accepts BOTH a **Desktop** (`installed`) and a **Web application** (`web`)
-    client. Desktop clients work fine with Claude Code's loopback redirect —
-    Google allows any localhost port for installed apps — and are the simplest
-    option (no redirect URI to pre-register); that's what the old flow used.
-    Returns (client_id, client_secret) or raises ValueError."""
+    The local Google servers need a **Desktop** ('installed') client — they use a
+    loopback redirect and rely on Google's loopback exemption (any localhost port).
+    A 'web' client is accepted but warned about (its callback ports would need
+    pre-registration). Returns (client_id, client_secret) or raises ValueError."""
     path = Path(path_str).expanduser()
     if not path.exists():
         raise ValueError(f"file not found: {path}")
@@ -1128,27 +1150,23 @@ def _read_oauth_client_json(path_str, callback_port):
         data = json.loads(path.read_text())
     except Exception as e:
         raise ValueError(f"not valid JSON: {e}")
-    blk = data.get("web") or data.get("installed")
+    blk = data.get("installed") or data.get("web")
     if not blk or not blk.get("client_id"):
-        raise ValueError("expected a Google OAuth client JSON ('web' or 'installed') with a client_id")
+        raise ValueError("expected a Google OAuth client JSON ('installed'/Desktop or 'web') with a client_id")
     cid, sec = blk["client_id"], blk.get("client_secret", "")
     if not _looks_like_secret(sec):
         raise ValueError("this client JSON has no usable client_secret (or it looks malformed)")
-    # A 'web' client only accepts pre-registered redirects; a Desktop client
-    # accepts any loopback port, so it needs no redirect check.
-    if "web" in data:
-        want = f"http://localhost:{callback_port}/callback"
-        if want not in (blk.get("redirect_uris") or []):
-            print(f"    ⚠ this Web client's redirect_uris {blk.get('redirect_uris')} do not include")
-            print(f"      {want} — add it in Cloud Console, or use a Desktop client instead.")
+    if "installed" not in data:
+        print("    ⚠ this looks like a 'Web application' client — the local servers want a")
+        print("      'Desktop app' client (loopback exemption). Recreate as Desktop if auth fails.")
     return cid, sec
 
 
-def _prompt_oauth_client(callback_port):
-    """First-run credential collection: point at the downloaded Web-app client
-    JSON (preferred) or enter Client ID + Secret manually. Returns (id, secret)."""
+def _prompt_oauth_client():
+    """Point at the downloaded Desktop OAuth client JSON (preferred) or enter the
+    Client ID + Secret by hand. Returns (id, secret)."""
     default = _latest_client_json() or ""
-    print("  Point me at the OAuth client JSON you downloaded (Web application),")
+    print("  Point me at the Desktop OAuth client JSON you downloaded,")
     print("  or type 'manual' to enter the Client ID / Secret by hand.")
     while True:
         raw = prompt("Path to client JSON ('manual' to type creds)",
@@ -1162,7 +1180,7 @@ def _prompt_oauth_client(callback_port):
                 secret=True)
             return cid.strip(), sec.strip()
         try:
-            cid, sec = _read_oauth_client_json(raw, callback_port)
+            cid, sec = _read_oauth_client_json(raw)
             print(f"    ✓ read OAuth client {cid[:24]}… from {Path(raw).name}")
             return cid, sec
         except ValueError as e:
@@ -1170,31 +1188,9 @@ def _prompt_oauth_client(callback_port):
             default = ""  # don't keep re-suggesting a bad default
 
 
-def _google_probe_scopes(title):
-    """Ask the live server what scopes it will request, by starting (but not
-    completing) the OAuth flow with `claude mcp login --no-browser` and parsing
-    the `scope` param from the emitted authorization URL. Best-effort → returns
-    a list of scope strings, or None if it couldn't be determined."""
-    try:
-        import urllib.parse as _u
-        out = subprocess.run(
-            claude_cmd("mcp", "login", title, "--no-browser"),
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
-        )
-        text = (out.stdout or "") + (out.stderr or "")
-        for tok in text.split():
-            if tok.startswith("https://accounts.google.com/"):
-                q = _u.parse_qs(_u.urlparse(tok).query)
-                scopes = q.get("scope", [""])[0].split()
-                return scopes or None
-    except Exception:
-        pass
-    return None
-
-
-def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
+def _print_google_cloud_prep(s, add_keys, first_run):
     """Cloud Console steps for the apps being added. First run also creates the ONE
-    OAuth client; later runs print only the incremental APIs + scopes to add."""
+    Desktop OAuth client; later runs print only the incremental APIs + scopes."""
     apis = _google_union_apis(s, add_keys)
     scopes = _google_union_scopes(s, add_keys)
     api_ids = " ".join(api_id for _, api_id in apis)
@@ -1204,7 +1200,7 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
   2a. Open <https://console.cloud.google.com/projectcreate> and create/select a
       personal project.
 
-  2b. Enable the APIs for the apps you picked (product API + its MCP API):
+  2b. Enable the product APIs for the apps you picked:
         gcloud services enable {api_ids}
       …or enable each from the API Library:""")
         for name, api_id in apis:
@@ -1212,22 +1208,22 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
         print(f"""
   2c. Configure the OAuth consent screen ({s['consent_url']}):
         • User Type: External · add your Google account as a Test User
-      Add these scopes ("Scopes for Google APIs") — these are what the servers
-      request; the setup re-confirms the exact live set after registration:""")
+        • ⚠ While in "Testing", Google EXPIRES refresh tokens after ~7 days — so the
+          servers would need re-auth weekly. PUBLISH the app (Testing → Production)
+          to make tokens durable.
+      Add these scopes ("Scopes for Google APIs") — what the local servers request:""")
         for sc in scopes:
             print(f"        {sc}")
         print(f"""
   2d. Create ONE OAuth 2.0 Client ID ({s['credentials_url']}):
-        • Application type:  Desktop app  (simplest — no redirect URI to configure;
-          Google accepts Claude Code's loopback sign-in on any localhost port).
-          A "Web application" client also works if you add the redirect URI
-          http://localhost:{callback_port}/callback to it.
-      Download the JSON — point the setup at it in the next step (or paste the
-      Client ID / Secret by hand).
+        • Application type:  Desktop app  (REQUIRED — the local servers use a
+          loopback OAuth redirect and rely on Google's loopback exemption; a
+          "Web application" client would need every callback port pre-registered).
+      Download the client-secret JSON — pass it next (or via --client-secret <path>).
 """)
     else:
         step(2, "Google Cloud Console — add the new app(s) to your existing setup")
-        print("  Reusing your existing OAuth client — no new client needed.")
+        print("  Reusing your existing Desktop OAuth client — no new client needed.")
         print(f"\n  Enable the added APIs:\n        gcloud services enable {api_ids}")
         for name, api_id in apis:
             print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
@@ -1238,49 +1234,181 @@ def _print_google_cloud_prep(s, add_keys, first_run, callback_port):
     input("  Press Enter once the Console steps above are done… ")
 
 
-def _claude_mcp_add_http_oauth(title, url, client_id, callback_port, secret):
-    """Register an OAuth-protected remote MCP server. The secret is passed via the
-    MCP_CLIENT_SECRET env var so it never appears on the command line / in logs."""
-    cmd = claude_cmd("mcp", "add", "--transport", "http", "--scope", "user",
-                     "--client-id", client_id, "--client-secret",
-                     "--callback-port", str(callback_port), title, url)
-    print(f"  Registering '{title}' → {url}")
-    print("  command:")
-    print("    " + " ".join(_shellquote(c) for c in cmd))
-    print("    (client secret passed via MCP_CLIENT_SECRET env — not shown)")
+# ── Google local-stdio helpers (Node-24 shim, MCP_TIMEOUT, keys, per-app auth) ──
+
+_UNDICI_SHIM_PATH = Path.home() / ".claude" / "force-undici-fetch.cjs"
+_UNDICI_SHIM_SRC = """\
+// Preload shim: make require('node-fetch') return Node's native fetch (undici).
+// Works around node-fetch@2 ERR_STREAM_PREMATURE_CLOSE on Node >= 24, which breaks
+// gaxios/google-auth-library — the libs the local Google MCP servers rely on.
+// Use via:  NODE_OPTIONS="--require <this file>"
+const Module = require('module');
+const origLoad = Module._load;
+function undiciFetch(...args) { return globalThis.fetch(...args); }
+undiciFetch.default = undiciFetch;
+undiciFetch.Headers = globalThis.Headers;
+undiciFetch.Request = globalThis.Request;
+undiciFetch.Response = globalThis.Response;
+undiciFetch.isRedirect = (code) => [301, 302, 303, 307, 308].includes(code);
+class FetchError extends Error { constructor(m, type) { super(m); this.name = 'FetchError'; this.type = type; } }
+class AbortError extends Error { constructor(m) { super(m); this.name = 'AbortError'; this.type = 'aborted'; } }
+undiciFetch.FetchError = FetchError;
+undiciFetch.AbortError = AbortError;
+Module._load = function (request, parent, isMain) {
+  if (request === 'node-fetch') return undiciFetch;
+  return origLoad.apply(this, arguments);
+};
+"""
+
+
+def _ensure_undici_shim():
+    """Ensure the Node-24 node-fetch→undici preload shim exists; return its path
+    (or None if it can't be written). The local Google servers hit gaxios/
+    google-auth-library, which use node-fetch@2 and premature-close on Node >= 24."""
+    try:
+        _UNDICI_SHIM_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if not _UNDICI_SHIM_PATH.exists():
+            _UNDICI_SHIM_PATH.write_text(_UNDICI_SHIM_SRC)
+            print(f"  ✓ wrote Node-24 fetch shim → {_UNDICI_SHIM_PATH}")
+        return _UNDICI_SHIM_PATH
+    except OSError as e:
+        print(f"  ⚠ couldn't write the undici shim ({e}); continuing without it.")
+        return None
+
+
+def _ensure_mcp_timeout(min_ms=120000):
+    """Raise MCP_TIMEOUT in ~/.claude/settings.json (idempotent). The local Google
+    servers import the heavy googleapis lib and take ~10s to reach initialize; on a
+    multi-server session boot that can exceed Claude Code's default connect timeout,
+    surfacing "failed to connect" for a perfectly healthy server."""
+    settings = Path.home() / ".claude" / "settings.json"
+    try:
+        data = json.loads(settings.read_text()) if settings.exists() else {}
+    except (OSError, ValueError):
+        print(f"  ⚠ couldn't read {settings}; set MCP_TIMEOUT={min_ms} yourself.")
+        return
+    env = data.setdefault("env", {})
+    try:
+        cur = int(str(env.get("MCP_TIMEOUT", "0")))
+    except ValueError:
+        cur = 0
+    if cur >= min_ms:
+        return
+    env["MCP_TIMEOUT"] = str(min_ms)
+    try:
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps(data, indent=2) + "\n")
+        print(f"  ✓ set MCP_TIMEOUT={min_ms} in {settings} (slow local servers need boot time).")
+    except OSError as e:
+        print(f"  ⚠ couldn't write {settings} ({e}); set MCP_TIMEOUT={min_ms} yourself.")
+
+
+def _write_gcp_oauth_keys(dest, client_id, client_secret):
+    """Write a Desktop ('installed') OAuth client JSON the local servers read. It
+    carries the client secret, so create it 0600 from the start (no world-readable
+    TOCTOU window) rather than write-then-chmod."""
+    payload = json.dumps({
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "redirect_uris": ["http://localhost"],
+        }
+    }, indent=2)
+    # O_CREAT honours the 0600 mode for a NEW file (umask can only tighten it);
+    # the chmod below covers the case where dest pre-existed with looser perms.
+    fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, payload.encode())
+    finally:
+        os.close(fd)
+    try:
+        os.chmod(dest, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError as e:
+        print(f"  ⚠ couldn't chmod 0600 {dest} ({e}) — it holds your OAuth client secret.")
+
+
+def _port_busy(port):
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sk:
+        sk.settimeout(0.3)
+        return sk.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _warn_runtime_env_footguns():
+    """Warn about ambient env vars that make the Drive/Calendar servers IGNORE their
+    token files at RUNTIME. `claude mcp add --env` can only ADD vars to the spawned
+    server — it cannot UNSET one the server inherits from the shell that launches
+    Claude Code. If these are exported, auth succeeds but the first tool call hangs."""
+    hits = [k for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
+                        "GOOGLE_DRIVE_MCP_REFRESH_TOKEN", "GOOGLE_ACCOUNT_MODE")
+            if os.environ.get(k)]
+    if hits:
+        print(f"\n  ⚠ {', '.join(hits)} set in your environment — the Drive/Calendar")
+        print("    server would switch to service-account / external-token / alt-account")
+        print("    mode and IGNORE the token file just minted. UNSET these in the shell")
+        print("    or launcher that starts Claude Code, or the server will hang on first use.")
+
+
+def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
+    """Run the app package's `auth` subcommand (opens a browser for consent) to mint
+    the token file. Blocks until consent completes. Returns True on success.
+
+    None of the three servers auto-auth on normal MCP start (Drive's first tool call
+    would hang), so this explicit browser step is mandatory before registration."""
+    busy = [p for p in app.get("auth_ports", []) if _port_busy(p)]
+    if busy:
+        print(f"  ⚠ loopback port(s) {busy} are in use — the OAuth callback needs one")
+        print(f"    of {app['auth_ports']} free (e.g. a running Drive MCP squats :3000).")
+        if not confirm("Continue anyway?", default=True):
+            return False
     env = os.environ.copy()
-    env["MCP_CLIENT_SECRET"] = secret
-    result = subprocess.run(cmd, env=env)
+    # Strip auth-mode footguns: with these set the Drive server IGNORES tokens.json,
+    # and GOOGLE_ACCOUNT_MODE would file Calendar tokens under a non-'normal' key.
+    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
+              "GOOGLE_DRIVE_MCP_REFRESH_TOKEN", "GOOGLE_ACCOUNT_MODE"):
+        env.pop(k, None)
+    env[app["keys_env"]] = str(keys_path)
+    env[app["token_env"]] = str(token_path)
+    if shim:
+        prev = env.get("NODE_OPTIONS", "")
+        env["NODE_OPTIONS"] = (prev + " " if prev else "") + f'--require "{shim}"'
+    print(f"\n  Authorizing {app['service_name']} — a browser window opens for consent")
+    print("  (if it doesn't, open the URL the command prints below):")
+    # cwd = the app's state dir (which holds gcp-oauth.keys.json) so the Gmail
+    # server's cwd→GMAIL_OAUTH_PATH copy is a harmless self-copy.
+    result = subprocess.run(["npx", "-y", app["package"], "auth"], env=env, cwd=str(cwd))
     if result.returncode != 0:
-        print(f"  ✗ claude mcp add failed for '{title}' (exit {result.returncode}).")
+        print(f"  ✗ auth failed for {app['service_name']} (exit {result.returncode}).")
         return False
-    print(f"  ✓ Registered '{title}'.")
+    if not Path(token_path).exists():
+        print(f"  ✗ auth exited 0 but no token file appeared at {token_path}.")
+        return False
+    try:
+        os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    print(f"  ✓ {app['service_name']} authorized.")
     return True
 
 
 def _google_rotate_secret(service_key, s, state):
     step(1, "Rotate the OAuth client secret")
-    print("  Create a new secret for the SAME OAuth client in Cloud Console:")
-    print(f"    {s['credentials_url']}")
-    new_secret = prompt(
-        "New OAuth Client Secret",
-        validator=lambda v: (_looks_like_secret(v),
-            "that looks malformed (a file path?) — paste the GOCSPX-… secret value"),
-        secret=True).strip()
+    print("  Provide the NEW client-secret JSON for the SAME Desktop OAuth client")
+    print(f"  (create a new secret in Cloud Console: {s['credentials_url']}).")
+    client_id, new_secret = _prompt_oauth_client()
     handle = state["handle"]
-    client_id = state["client_id"]
-    port = state.get("callback_port") or s["callback_port"]
     apps = state.get("apps", [])
-    titles = _google_titles(handle, s, apps)
+    slug = slugify(handle) or "google"
     for k in apps:
-        title = titles[k]
-        subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        _claude_mcp_add_http_oauth(title, s["apps"][k]["remote_url"], client_id, port, new_secret)
-    _save_google_state(service_key, handle, client_id, new_secret, port, apps)
-    print("\n  ✓ Secret rotated. Re-authorize each server:")
-    for k in apps:
-        print(f"    claude mcp login \"{titles[k]}\"")
+        app_dir = make_state_dir(service_key, os.path.join(slug, k))
+        _write_gcp_oauth_keys(app_dir / "gcp-oauth.keys.json", client_id, new_secret)
+    _save_google_state(service_key, handle, client_id, new_secret, "", apps)
+    print("\n  ✓ Rewrote the client-key files with the new secret. Existing tokens keep")
+    print("    working (refresh_token unchanged); if a server now fails auth, re-run")
+    print("    setup and re-authorize that app.")
     return 0
 
 
@@ -1311,17 +1439,27 @@ def _prompt_new_handle(existing):
         return h
 
 
-def _setup_remote_oauth(service_key, s):
+def _setup_local_oauth(service_key, s, args=None):
+    """Set up Google apps as LOCAL stdio Node MCP servers (one per app). For each
+    selected app: write a Desktop gcp-oauth.keys.json from the client secret, run
+    the package's `auth` subcommand (browser consent → token file), then register
+    the stdio server with Claude Code. CLI flags (--client-secret/--handle/--apps)
+    make it non-interactive; otherwise it prompts."""
     apps = s["apps"]
-    callback_port = s["callback_port"]
+    cli_secret = getattr(args, "client_secret", None)
+    cli_handle = getattr(args, "handle", None)
+    cli_apps = getattr(args, "apps", None)
 
-    # STEP 0 — pick the ACCOUNT first. Each Google account is INDEPENDENT: its own
-    # OAuth client + its own <handle>-Gmail/Drive/Calendar servers. Several coexist
-    # (e.g. minaalfy8 and minaalfykamel). Loading state is keyed by the chosen
-    # handle, so adding a new account never converges (overwrites) another one.
+    # STEP 0 — pick the ACCOUNT. Each Google account is INDEPENDENT: its own OAuth
+    # client + its own <handle>-Gmail/Drive/Calendar local servers. Several coexist
+    # (e.g. minaalfy8 and minaalfykamel); state is keyed by handle so adding a new
+    # account never overwrites another.
     handles = _list_google_handles(service_key)
     step(0, "Which Google account?")
-    if handles:
+    if cli_handle:
+        handle = slugify(cli_handle)
+        print(f"  Using account handle '{handle}' (from --handle).")
+    elif handles:
         opts = []
         for h in handles:
             st = _load_google_state(service_key, h)
@@ -1343,10 +1481,20 @@ def _setup_remote_oauth(service_key, s):
     else:
         print(f"\n  New account '{handle}' — this gets its own OAuth client.")
 
+    # STEP 1 — choose apps (from --apps, or interactively)
     step(1, "Choose which Google apps you want")
-    options = [(k, f"{apps[k]['service_name']}  ({apps[k]['remote_url']})") for k in apps]
-    desired = prompt_multiselect(
-        "Select the Google apps to enable:", options, preselected=registered)
+    if cli_apps:
+        wanted = [a.strip() for a in cli_apps.split(",") if a.strip()]
+        bad = [a for a in wanted if a not in apps]
+        if bad:
+            print(f"  ✗ unknown app(s): {bad}; valid: {list(apps)}")
+            return 2
+        desired = [k for k in apps if k in wanted]
+        print(f"  Apps (from --apps): {', '.join(desired)}")
+    else:
+        options = [(k, f"{apps[k]['service_name']}  ({apps[k]['package']})") for k in apps]
+        desired = prompt_multiselect(
+            "Select the Google apps to enable:", options, preselected=registered)
     desired_set = set(desired)
     to_add = [k for k in apps if k in desired_set and k not in registered]
     to_remove = [k for k in apps if k in registered and k not in desired_set]
@@ -1354,96 +1502,107 @@ def _setup_remote_oauth(service_key, s):
 
     if not to_add and not to_remove:
         print("\n  Selection already matches what's registered — nothing to add/remove.")
-        if state and confirm("Rotate the OAuth client secret instead?", default=False):
+        if state and not cli_secret and confirm("Rotate the OAuth client secret instead?", default=False):
             return _google_rotate_secret(service_key, s, state)
-        print("  Done.")
+        print("  Done.  (To re-authorize an app, de-select then re-select it, or remove+add.)")
         return 0
 
     print(f"\n  Plan:  add={to_add or '—'}   remove={to_remove or '—'}   keep={keep or '—'}")
 
-    # Resolve the shared OAuth client — reuse existing, or collect it on first run.
-    if state and state.get("client_id"):
-        client_id = state["client_id"]
-        secret = state.get("client_secret", "")
-        handle = state["handle"]
-        port = state.get("callback_port") or callback_port
-        # A stored secret that no longer looks like a secret (e.g. a stale path
-        # from a bad earlier run) is the classic "the provided client secret is
-        # invalid" cause — force a re-provide instead of silently reusing junk.
-        bad_secret = not _looks_like_secret(secret)
-        if bad_secret and secret:
-            print(f"  ⚠ the stored client secret looks malformed — you'll re-provide the client.")
-        reuse = (not bad_secret) and confirm(
-            f"Reuse the stored OAuth client {client_id[:24]}…?", default=True)
-        if not reuse:
-            step(3, "Provide your OAuth client (Desktop app or Web application)")
-            client_id, secret = _prompt_oauth_client(port)
-        if to_add:
-            _print_google_cloud_prep(s, to_add, first_run=False, callback_port=port)
-    else:
-        _print_google_cloud_prep(s, desired, first_run=True, callback_port=callback_port)
-        step(3, f"Provide the OAuth client for '{handle}' (Desktop app or Web application)")
-        print(f"  Servers will be titled '{handle}-Gmail', '{handle}-GoogleDrive', etc.")
-        client_id, secret = _prompt_oauth_client(callback_port)
-        port = callback_port
+    # Resolve the shared Desktop OAuth client — reuse stored, or collect via
+    # --client-secret / prompt.
+    client_id = secret = ""
+    if to_add:
+        stored_ok = (state and state.get("client_id")
+                     and _looks_like_secret(state.get("client_secret", "")))
+        if cli_secret:
+            try:
+                client_id, secret = _read_oauth_client_json(cli_secret)
+            except ValueError as e:
+                print(f"  ✗ --client-secret: {e}")
+                return 2
+            print(f"  ✓ read OAuth client {client_id[:24]}… from {Path(cli_secret).name}")
+            # Mirror the interactive paths' Console reminder: full prep for a new
+            # account, incremental (added APIs/scopes) when adding to an existing one.
+            if state:
+                _print_google_cloud_prep(s, to_add, first_run=False)
+            else:
+                _print_google_cloud_prep(s, desired, first_run=True)
+        elif stored_ok and confirm(
+                f"Reuse the stored OAuth client {state['client_id'][:24]}…?", default=True):
+            client_id, secret = state["client_id"], state["client_secret"]
+            _print_google_cloud_prep(s, to_add, first_run=False)
+        else:
+            _print_google_cloud_prep(s, desired, first_run=not state)
+            step(3, f"Provide the Desktop OAuth client for '{handle}'")
+            print(f"  Servers will be titled '{handle}-Gmail', '{handle}-GoogleDrive', etc.")
+            client_id, secret = _prompt_oauth_client()
+    elif state:
+        client_id, secret = state.get("client_id", ""), state.get("client_secret", "")
 
-    step(4, "Register / unregister servers in Claude Code")
+    # Shared prep: ensure the Node-24 fetch shim + raise MCP_TIMEOUT for slow boots,
+    # and warn about ambient env vars that would make the runtime servers ignore tokens.
+    shim = _ensure_undici_shim() if to_add else None
+    if to_add:
+        _ensure_mcp_timeout()
+        _warn_runtime_env_footguns()
+
+    slug = slugify(handle) or "google"
     titles = _google_titles(handle, s, apps)
+
+    # STEP 4 — per app: write keys → browser auth → register stdio server.
+    step(4, "Authorize + register the selected app(s)")
     added_ok = []
     for k in to_add:
-        if _claude_mcp_add_http_oauth(titles[k], apps[k]["remote_url"], client_id, port, secret):
+        app = apps[k]
+        app_dir = make_state_dir(service_key, os.path.join(slug, k))
+        keys_path = app_dir / "gcp-oauth.keys.json"
+        token_path = app_dir / app["token_file"]
+        _write_gcp_oauth_keys(keys_path, client_id, secret)
+
+        # Mint the token unless a valid one already exists and the user keeps it.
+        if token_path.exists() and confirm(
+                f"  {app['service_name']}: a token file already exists — keep it (skip browser)?",
+                default=True):
+            pass
+        elif not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
+            print(f"  ⚠ skipping {app['service_name']} — not authorized.")
+            continue
+
+        env_pairs = {app["keys_env"]: str(keys_path), app["token_env"]: str(token_path)}
+        if shim:
+            env_pairs["NODE_OPTIONS"] = f'--require "{shim}"'
+        title = titles[k]
+        subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if claude_mcp_add(title, "npx", app["package"], env_pairs, step_num=4):
             added_ok.append(k)
+
     removed_ok = []
     for k in to_remove:
         title = titles[k]
         if confirm(f"Remove '{title}' from Claude Code?", default=True):
             subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title))
-            print(f"  ✓ Removed '{title}'.")
+            # Delete the app's state dir too — its token file holds a live refresh
+            # token; a "removed" app shouldn't leave working credentials on disk.
+            shutil.rmtree(STATE_ROOT / service_key / slug / k, ignore_errors=True)
+            print(f"  ✓ Removed '{title}' (and its local token).")
             removed_ok.append(k)
         else:
             print(f"  ⓘ Kept '{title}' — still registered; leaving it in tracked state.")
 
     # Declined removals stay registered → keep them in state (don't drop silently).
     final_apps = sorted((set(registered) - set(removed_ok)) | set(added_ok))
-    final_dir = _save_google_state(service_key, handle, client_id, secret, port, final_apps)
+    final_dir = _save_google_state(service_key, handle, client_id, secret, "", final_apps)
     print(f"\n  ✓ State saved at {final_dir} (mode 600).")
 
-    if added_ok:
-        # Ground-truth scopes: ask each live server what it will actually request,
-        # so the consent screen is configured with the real set (not a guess).
-        step(5, "Confirm consent-screen scopes (read live from each server)")
-        print("  These are the scopes the servers will request — every one must be added")
-        print("  to your OAuth consent screen (Testing mode: your test user can approve them):")
-        any_probe = False
-        for k in added_ok:
-            print(f"    • probing {s['apps'][k]['service_name']}… (a few seconds)")
-            scopes = _google_probe_scopes(titles[k])
-            if scopes:
-                any_probe = True
-                print(f"    {s['apps'][k]['service_name']}:")
-                for sc in scopes:
-                    print(f"        {sc}")
-        if not any_probe:
-            print("    (couldn't probe live — use the scopes printed in STEP 2 above.)")
-
-        step(6, "Authorize now (opens your browser) — one sign-in per server")
-        print("  Registration alone leaves each server at '! Needs authentication'.")
-        print("  Sign in now to finish (the old flow did this during setup too):")
-        if confirm("Run `claude mcp login` for the new server(s) now?", default=True):
-            for k in added_ok:
-                print(f"  → authorizing {titles[k]} …")
-                rc = subprocess.run(claude_cmd("mcp", "login", titles[k])).returncode
-                if rc != 0:
-                    print(f"    ⚠ '{titles[k]}' didn't finish authorizing. Common causes:")
-                    print(f"       • 'client secret is invalid' → re-run and re-provide the client")
-                    print(f"       • a scope was blocked → add it to your consent screen")
-                    print(f"       retry: claude mcp login \"{titles[k]}\"")
-        else:
-            print("  Skipped. Authorize later (one browser sign-in each):")
-            for k in added_ok:
-                print(f"    claude mcp login \"{titles[k]}\"")
     hr("═")
-    print("  ✓ Done. `claude mcp list` shows status; restart your session to load the tools.")
+    if added_ok:
+        print("  ✓ Done. RESTART your Claude Code session to load the new tools.")
+        print("     The local Google servers take ~10s each to boot (heavy googleapis")
+        print("     import) — MCP_TIMEOUT is set so they don't lose the startup race.")
+    else:
+        print("  ✓ Done. `claude mcp list` shows status.")
     hr("═")
     return 0
 
@@ -2380,7 +2539,7 @@ def _setup_remote_http(service_key, s):
 # Top-level service setup
 # ──────────────────────────────────────────────────────────────────────────────
 
-def cmd_setup(service_key):
+def cmd_setup(service_key, args=None):
     if service_key not in SERVICES:
         print(f"unknown service: {service_key}; expected one of {list(SERVICES)}")
         return 2
@@ -2396,8 +2555,8 @@ def cmd_setup(service_key):
     if not require_claude_bin():
         return 1
 
-    if s["auth_kind"] == "remote_oauth":
-        return _setup_remote_oauth(service_key, s)
+    if s["auth_kind"] == "local_oauth":
+        return _setup_local_oauth(service_key, s, args)
     if s["auth_kind"] == "api_token":
         return _setup_api_token(service_key, s)
     if s["auth_kind"] == "cookie_paste":
@@ -2430,8 +2589,12 @@ def cmd_doctor():
         for slug_dir in sorted(service_dir.iterdir()):
             if not slug_dir.is_dir():
                 continue
-            files = sorted(f.name for f in slug_dir.iterdir())
+            files = sorted(f.name for f in slug_dir.iterdir() if f.is_file())
             print(f"    {slug_dir.name}/  {files}")
+            # Google local state nests one level deeper: <slug>/<app>/{keys, token}.
+            for sub in sorted(d for d in slug_dir.iterdir() if d.is_dir()):
+                sub_files = sorted(f.name for f in sub.iterdir() if f.is_file())
+                print(f"      {sub.name}/  {sub_files}")
     return 0
 
 
@@ -2446,13 +2609,21 @@ def main():
     )
     sub = ap.add_subparsers(dest="service", required=True)
     for key, cfg in SERVICES.items():
-        sub.add_parser(key, help=f"Set up the {cfg['label']} MCP server.")
+        p = sub.add_parser(key, help=f"Set up the {cfg['label']} MCP server.")
+        if cfg.get("auth_kind") == "local_oauth":
+            p.add_argument("--client-secret", metavar="PATH",
+                           help="Path to the downloaded Desktop OAuth client-secret JSON "
+                                "(skips the 'point me at the JSON' prompt; runs non-interactively).")
+            p.add_argument("--handle", metavar="NAME",
+                           help="Account handle to set up (e.g. minaalfykamel) without the menu.")
+            p.add_argument("--apps", metavar="LIST",
+                           help="Comma-separated apps to enable (e.g. gmail,drive,calendar).")
     sub.add_parser("doctor", help="List registered servers and their local state.")
     # alias: `linkedin` works as a positional even though the dict key matches.
     args = ap.parse_args()
     if args.service == "doctor":
         return cmd_doctor()
-    return cmd_setup(args.service)
+    return cmd_setup(args.service, args)
 
 
 if __name__ == "__main__":

@@ -67,13 +67,17 @@ so the whole toolkit stays portable. The repo's .gitignore excludes ./state/.
 
 import argparse
 import base64
+import collections
 import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -214,6 +218,35 @@ def ado_org_from_url(url):
     return None
 
 
+_CLOUD_SUFFIXES = (
+    ".atlassian.net",
+    ".jira.com",
+    ".jira-dev.com",
+    ".atlassian.com",
+    ".atlassian-us-gov.net",      # FedRAMP
+    ".atlassian-us-gov-mod.net",  # FedRAMP Moderate
+)
+
+_PRIVATE_HOST_RE = re.compile(r"^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)")
+
+
+def is_atlassian_cloud_url(url):
+    """Cloud (Basic: email + API token) vs Server/DC (Bearer: PAT) branches on this.
+
+    Must agree with vendor/mcp-atlassian's utils/urls.py @ d8bc786 — if this says
+    DC where the vendor says Cloud, setup collects a PAT the server will never
+    use and GH-17 reproduces. Suffix match (not `in`) so
+    evil-atlassian.net.attacker.com stays DC.
+    """
+    try:
+        hostname = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if hostname == "localhost" or _PRIVATE_HOST_RE.match(hostname):
+        return False
+    return hostname == "api.atlassian.com" or hostname.endswith(_CLOUD_SUFFIXES)
+
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -307,30 +340,65 @@ SERVICES = {
             },
         },
     },
-    # ── Atlassian Data Center via sooperset/mcp-atlassian (api_token) ─────
+    # ── Atlassian Cloud or Data Center via sooperset/mcp-atlassian (api_token) ──
+    # Auth branches on the URL (is_atlassian_cloud_url, GH-17): Cloud needs
+    # JIRA_USERNAME + JIRA_API_TOKEN (Basic); DC needs JIRA_PERSONAL_TOKEN (Bearer).
     "atlassian-sooperset": {
         "provider": "atlassian",
         "launcher": "uvx",
         "auth_kind": "api_token",
-        "label": "Atlassian (Jira + Confluence, Data Center)",
+        "label": "Atlassian (Jira + Confluence, Cloud or Data Center)",
         "short": "Atlassian",
         "service_name": "Atlassian",
         "package": "mcp-atlassian",
         "title_source_env": "JIRA_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
+        "pat_howto": (
+            "This tool supports both Atlassian Cloud and Data Center — it asks for\n"
+            "the URL in the next step and only prompts for the credential pair that\n"
+            "matches what you enter there.\n"
+            "\n"
+            "  Cloud (URL ends in .atlassian.net or .jira.com):\n"
+            "    1. Go to https://id.atlassian.com/manage-profile/security/api-tokens\n"
+            '    2. Click "Create API token", name it (e.g. "Claude Code MCP"), and\n'
+            "       copy it (starts with 'ATATT'). You'll also need your account email.\n"
+            "\n"
+            "  Data Center / Server (any other host):\n"
+            "    1. Sign in to your Jira instance in a browser.\n"
+            '    2. Open your profile menu (top-right avatar) → "Personal Access Tokens".\n'
+            '    3. Click "Create token", name it, set an expiry, and copy the token.'
+        ),
         "scopes_note": (
-            "Uses one Jira Data Center Personal Access Token (PAT) with the\n"
-            "account's full Jira/Confluence permissions — no per-scope selector.\n"
+            "Cloud authenticates with HTTP Basic (account email + API token from\n"
+            "id.atlassian.com); Data Center authenticates with a Bearer Personal\n"
+            "Access Token. The two credential kinds are NOT interchangeable — this\n"
+            "tool detects which applies from the URL and only asks for that pair.\n"
             "Source pin: vendor/mcp-atlassian @ d8bc786\n"
-            "  src/mcp_atlassian/jira/config.py:180          (JIRA_PERSONAL_TOKEN read)\n"
-            "  src/mcp_atlassian/confluence/config.py:104    (CONFLUENCE_PERSONAL_TOKEN read)"
+            "  src/mcp_atlassian/utils/urls.py:49        (is_atlassian_cloud_url)\n"
+            "  src/mcp_atlassian/jira/config.py:257-300  (Cloud → JIRA_USERNAME + JIRA_API_TOKEN; DC → JIRA_PERSONAL_TOKEN)\n"
+            "  src/mcp_atlassian/confluence/config.py:104 (CONFLUENCE_PERSONAL_TOKEN read)"
         ),
         "env_vars": [
             {
                 "name": "JIRA_URL",
                 "required": True,
                 "validator": "url",
-                "description": "Your Jira Data Center base URL (e.g. https://jira.company.com)",
+                "description": "Your Jira base URL — Cloud (e.g. https://your-site.atlassian.net) or Data Center (e.g. https://jira.company.com)",
+            },
+            {
+                "name": "JIRA_USERNAME",
+                "required": True,
+                "validator": "nonempty",
+                "description": "Atlassian account email — Cloud authenticates with this + JIRA_API_TOKEN over HTTP Basic, not a PAT.",
+                "applies_if": {"env": "JIRA_URL", "cloud": True},
+            },
+            {
+                "name": "JIRA_API_TOKEN",
+                "required": True,
+                "validator": "nonempty",
+                "description": "Cloud API token from https://id.atlassian.com/manage-profile/security/api-tokens (starts with 'ATATT').",
+                "secret": True,
+                "applies_if": {"env": "JIRA_URL", "cloud": True},
             },
             {
                 "name": "JIRA_PERSONAL_TOKEN",
@@ -338,6 +406,7 @@ SERVICES = {
                 "validator": "nonempty",
                 "description": "Jira DC PAT (Profile → Personal Access Tokens → Create token)",
                 "secret": True,
+                "applies_if": {"env": "JIRA_URL", "cloud": False},
             },
             {
                 "name": "CONFLUENCE_URL",
@@ -348,14 +417,40 @@ SERVICES = {
                 "derive_suffix": "/wiki",
             },
             {
+                "name": "CONFLUENCE_USERNAME",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": "Confluence account email. Leave blank to reuse JIRA_USERNAME (the same account works when Jira + Confluence share a Cloud site).",
+                "derive_from_env": "JIRA_USERNAME",
+                "applies_if": {"env": "JIRA_URL", "cloud": True},
+            },
+            {
+                "name": "CONFLUENCE_API_TOKEN",
+                "required": False,
+                "validator": "nonempty_or_empty",
+                "description": "Confluence Cloud API token. Leave blank to reuse JIRA_API_TOKEN (the same token works when Jira + Confluence share a Cloud site).",
+                "secret": True,
+                "derive_from_env": "JIRA_API_TOKEN",
+                "applies_if": {"env": "JIRA_URL", "cloud": True},
+            },
+            {
                 "name": "CONFLUENCE_PERSONAL_TOKEN",
                 "required": False,
                 "validator": "nonempty_or_empty",
                 "description": "Confluence DC PAT. Leave blank to reuse JIRA_PERSONAL_TOKEN (the same token works when Jira + Confluence share an instance).",
                 "secret": True,
                 "derive_from_env": "JIRA_PERSONAL_TOKEN",
+                "applies_if": {"env": "JIRA_URL", "cloud": False},
             },
         ],
+        # Opt-in auth probe (GH-17) — a green handshake can't tell Basic-vs-Bearer
+        # confusion from a working config. Cloud-only: DC has no collected username.
+        "verify_tool": {
+            "name": "jira_get_user_profile",
+            "arg_name": "user_identifier",
+            "arg_from_env": "JIRA_USERNAME",
+            "applies_if": {"env": "JIRA_URL", "cloud": True},
+        },
     },
     # ── LinkedIn (cookie_paste) — local vendor under vendor/linkedin-mcp ──
     "linkedin": {
@@ -817,6 +912,35 @@ def write_env_file(path, pairs):
 # Claude Code registration
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _kill_quietly(proc):
+    """Kill the whole process group, not just the launcher.
+
+    npx/uvx/uv-run exec the real server as a grandchild that inherits stdout, so
+    killing only the direct child leaves that pipe open and readline() blocks
+    forever — and leaves a live server holding the operator's credentials.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _stderr_pump(stream, sink):
+    """Drain the server's stderr continuously into a bounded buffer.
+
+    Without this, a server that writes more than the ~64 KiB pipe buffer blocks
+    forever while we're blocked reading stdout — a deadlock, not a slow start.
+    """
+    try:
+        for line in stream:
+            sink.append(line)
+    except Exception:
+        pass
+
+
 def _build_spawn_command(launcher, package, local_dir=None, console_script=None, extra_args=None):
     """Reproduce the command claude-code will spawn for this MCP server, so we
     can drive it directly with a JSON-RPC handshake instead of trusting that
@@ -837,7 +961,7 @@ def _build_spawn_command(launcher, package, local_dir=None, console_script=None,
     return cmd
 
 
-def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90):
+def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90, verify_tool=None, declared_env=None):
     """Spawn the just-registered MCP server and drive an initialize +
     tools/list JSON-RPC round-trip over stdio. Returns (ok, message, tool_count).
 
@@ -846,9 +970,9 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
       • vendor package broken or missing after install
       • env vars not propagated through the registration
       • server crashes during initialize
-    What it does NOT catch:
-      • credential rejection on first real tool call (auth-flow-specific
-        pre-registration probes already cover this for the flows that can)
+      • credential rejection on the first real tool call, IF the caller
+        passes verify_tool ({"name": ..., "arguments": {...}}) — opt-in,
+        since most services have no cheap read-only tool to probe with
     """
     try:
         cmd = _build_spawn_command(launcher, package, local_dir, console_script, extra_args)
@@ -859,73 +983,189 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     for k, v in env_pairs.items():
         if v != "":
             env[k] = v
+    # An exported JIRA_* in the operator's shell would otherwise be inherited and
+    # silently satisfy an auth mode this config didn't ask for, so the probe would
+    # pass on credentials the registered server won't have (GH-17).
+    for k in (declared_env or ()):
+        if k not in env_pairs or env_pairs[k] == "":
+            env.pop(k, None)
 
-    requests = (
-        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
-        '{"protocolVersion":"2024-11-05","capabilities":{},'
-        '"clientInfo":{"name":"setup-mcp.py","version":"0"}}}\n'
-        '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
-        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n'
-    )
-
+    # Request/response must be interleaved, not batched: writing every request
+    # then closing stdin makes the server exit on EOF before it answers
+    # tools/list, which silently reported "0 tools" as a pass (GH-17).
     try:
-        result = subprocess.run(
-            cmd, input=requests, capture_output=True, text=True, timeout=timeout, env=env
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env, bufsize=1,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return False, f"server didn't respond within {timeout}s (first-run npm/uvx install can be slow — retry once)", 0
     except FileNotFoundError:
         return False, f"launcher binary not found on PATH: '{cmd[0]}'", 0
     except Exception as e:
         return False, f"failed to spawn server: {e}", 0
 
-    init_ok = False
-    server_info = ""
-    tools_count = 0
-    tools_error = None
-    for line in (result.stdout or "").splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            msg = json.loads(line)
-        except Exception:
-            continue
-        if msg.get("id") == 1 and "result" in msg:
-            init_ok = True
-            sinfo = msg["result"].get("serverInfo") or {}
-            server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
-        elif msg.get("id") == 2 and "result" in msg and "tools" in msg["result"]:
-            tools_count = len(msg["result"]["tools"])
-        elif msg.get("id") == 2 and "error" in msg:
-            tools_error = msg["error"]
+    _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE|LI_AT|JSESSIONID", re.I)
+    _raw = [v for k, v in env_pairs.items()
+            if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
+    # Basic auth puts base64(user:token) on the wire, so the token never appears
+    # verbatim for a Cloud server to echo — redact the encoded forms too.
+    secrets = list(_raw)
+    for sec in _raw:
+        secrets.append(base64.b64encode(sec.encode()).decode())
+        for other in env_pairs.values():
+            if isinstance(other, str) and other and other not in _raw:
+                secrets.append(base64.b64encode(f"{other}:{sec}".encode()).decode())
+    secrets.sort(key=len, reverse=True)
 
-    if not init_ok:
-        tail = "\n".join((result.stderr or "").splitlines()[-12:])
+    def _redact(text):
+        """A server can echo its own credential into stderr; never surface it."""
+        for sec in secrets:
+            text = text.replace(sec, "***")
+        return text
+
+    stderr_tail = collections.deque(maxlen=200)
+    threading.Thread(target=_stderr_pump, args=(proc.stderr, stderr_tail), daemon=True).start()
+    # readline() blocks with no deadline of its own, so the timeout has to come
+    # from killing the process: that closes stdout and readline() returns ''.
+    watchdog = threading.Timer(timeout, _kill_quietly, args=(proc,))
+    watchdog.daemon = True
+    watchdog.start()
+
+    def _tail():
+        return _redact("\n".join("".join(stderr_tail).splitlines()[-12:]))[-4000:]
+
+    def _send(payload):
+        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.flush()
+
+    def _await(want_id):
+        """Read until this id answers, or the watchdog kills the server."""
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                return None
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == want_id:
+                return msg
+
+    def _timed_out():
+        return not watchdog.is_alive()
+
+    try:
+        _send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "setup-mcp.py", "version": "0"}}})
+        init = _await(1)
+        if init is None or "result" not in init:
+            if _timed_out():
+                return False, (
+                    f"server didn't respond within {timeout}s "
+                    "(first-run npm/uvx install can be slow — retry once)"
+                ), 0
+            return False, (
+                "server didn't complete initialize.\n"
+                "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
+            ), 0
+        sinfo = init["result"].get("serverInfo") or {}
+        server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
+
+        _send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        _send({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        listed = _await(2)
+        if listed is None:
+            why = f"timed out after {timeout}s" if _timed_out() else "never answered"
+            return False, f"initialize OK ({server_info}) but tools/list {why}", 0
+        if "error" in listed:
+            return False, f"initialize OK ({server_info}) but tools/list errored: {_redact(str(listed['error']))}", 0
+        tools_count = len(listed.get("result", {}).get("tools") or [])
+        if tools_count == 0:
+            return False, f"initialize OK ({server_info}) but the server exposed 0 tools", 0
+
+        if not verify_tool:
+            return True, f"{server_info} responded — {tools_count} tools exposed", tools_count
+
+        _send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
+            "name": verify_tool["name"], "arguments": verify_tool["arguments"]}})
+        probed = _await(3)
+        # Fail closed: a probe that never answered is not a probe that passed.
+        if probed is None:
+            why = f"timed out after {timeout}s" if _timed_out() else "never answered"
+            return False, f"auth probe ({verify_tool['name']}) {why}", tools_count
+        verify_ok, verify_msg = _read_tool_call_result(probed)
+        if not verify_ok:
+            return False, (
+                f"auth probe ({verify_tool['name']}) failed: {_redact(verify_msg)}\n"
+                "      (a privacy-restricted account lookup can also cause this — "
+                "if the credentials are known good, re-run and skip the probe)"
+            ), tools_count
+        return True, (
+            f"{server_info} responded — {tools_count} tools exposed; "
+            f"auth probe OK ({verify_tool['name']})"
+        ), tools_count
+    except OSError as e:
+        # BrokenPipe and friends: the server died mid-exchange.
         return False, (
-            f"server didn't complete initialize (exit {result.returncode}).\n"
-            f"    stderr tail:\n      " + tail.replace("\n", "\n      ")
+            f"server closed the connection mid-exchange ({e}).\n"
+            "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
         ), 0
-    if tools_error:
-        return False, f"initialize OK ({server_info}) but tools/list errored: {tools_error}", 0
-    return True, f"{server_info} responded — {tools_count} tools exposed", tools_count
+    except Exception as e:
+        # Never let a parse bug skip the caller's rollback.
+        return False, _redact(f"verification error: {type(e).__name__}: {e}"), 0
+    finally:
+        watchdog.cancel()
+        _kill_quietly(proc)
 
 
-def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None):
-    """Run the post-registration handshake test. On failure, roll back the
-    `claude mcp add` so Claude Code doesn't carry a broken handle, and return
-    False. State dir is preserved for debugging."""
+def _read_tool_call_result(msg):
+    """Interpret a tools/call JSON-RPC response as a pass/fail auth probe.
+
+    mcp-atlassian's tools catch auth errors and return them inside the normal
+    (non-isError) text content as a {"success": false, ...} envelope rather
+    than raising — so isError alone would miss the 403 this probe exists for.
+    """
+    if "error" in msg:
+        return False, str(msg["error"])
+    result = msg.get("result") or {}
+    text = ""
+    for block in result.get("content") or []:
+        if block.get("type") == "text":
+            text = block.get("text", "")
+            break
+    if result.get("isError"):
+        return False, text or "tool call reported an error"
+    try:
+        payload = json.loads(text)
+    except (ValueError, TypeError):
+        return True, text[:200] or "call succeeded"
+    if isinstance(payload, dict) and payload.get("success") is False:
+        return False, str(payload.get("error", text))
+    return True, text[:200]
+
+
+def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None, verify_tool=None, declared_env=None):
+    """Run the post-registration handshake test (plus an optional real
+    auth-probe tool call). On failure, roll back the `claude mcp add` so
+    Claude Code doesn't carry a broken handle, and return False. State dir
+    is preserved for debugging."""
     if step_num is not None:
         step(step_num, "Smoke test — JSON-RPC round-trip against the registered server")
-    print("  Spawning the same command Claude Code will use, sending initialize + tools/list…")
+    probe_note = f" + a {verify_tool['name']} auth probe" if verify_tool else ""
+    print(f"  Spawning the same command Claude Code will use, sending initialize + tools/list{probe_note}…")
     ok, msg, _ = _mcp_handshake_test(
         launcher=launcher, package=package, env_pairs=env_pairs,
         extra_args=extra_args, local_dir=local_dir, console_script=console_script,
+        verify_tool=verify_tool, declared_env=declared_env,
     )
     if ok:
         print(f"  ✓ {msg}")
         return True
-    print(f"  ✗ Handshake failed: {msg}")
+    print(f"  ✗ Verification failed: {msg}")
     print()
     print("  Rolling back the registration so the session won't load a broken server…")
     rm = subprocess.run(
@@ -1608,8 +1848,17 @@ def _setup_local_oauth(service_key, s, args=None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Setup — api_token branch (Atlassian DC, Tempo)
+# Setup — api_token branch (Atlassian Cloud/DC, Tempo, Azure DevOps, GitLab)
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _spec_applies(spec, values):
+    """Evaluate a spec's applies_if against values collected so far this loop.
+    No applies_if key = always applies (no-op for other api_token services)."""
+    cond = spec.get("applies_if")
+    if not cond:
+        return True
+    return is_atlassian_cloud_url(values.get(cond["env"], "")) == cond["cloud"]
+
 
 def _setup_api_token(service_key, s):
     step(1, f"Generate a Personal Access Token for {s['label']}")
@@ -1635,6 +1884,9 @@ def _setup_api_token(service_key, s):
     values = {}
     for spec in s["env_vars"]:
         name = spec["name"]
+        if not _spec_applies(spec, values):
+            print(f"  ↷ Skipping {name} (not applicable for this URL's deployment type)")
+            continue
         required = spec.get("required", False)
         validator_key = spec.get("validator", "nonempty")
         validator = VALIDATORS.get(validator_key)
@@ -1727,10 +1979,19 @@ def _setup_api_token(service_key, s):
     if not ok:
         return 1
 
+    vt_spec = s.get("verify_tool")
+    verify_tool = None
+    if vt_spec and _spec_applies(vt_spec, values):
+        verify_tool = {
+            "name": vt_spec["name"],
+            "arguments": {vt_spec["arg_name"]: values.get(vt_spec["arg_from_env"], "")},
+        }
+
     if not _finalize_with_handshake(
         title=title, final_dir=final_dir,
         launcher=s["launcher"], package=package, env_pairs=values,
-        step_num=6,
+        step_num=6, verify_tool=verify_tool,
+        declared_env=[spec["name"] for spec in s["env_vars"]],
     ):
         return 1
 
@@ -1892,6 +2153,7 @@ def _setup_cookie_paste(service_key, s):
         launcher=s["launcher"], package=s["local_pkg_dir"], env_pairs=env_pairs,
         local_dir=local_dir, console_script=s.get("local_pkg_console_script"),
         step_num=6,
+        declared_env=[spec["name"] for spec in s.get("env_vars", [])],
     ):
         return 1
 
@@ -2233,6 +2495,7 @@ def _setup_entra_login(service_key, s):
         title=title, final_dir=final_dir,
         launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
         extra_args=extra_args, step_num=7,
+        declared_env=[spec["name"] for spec in s.get("env_vars", [])],
     ):
         return 1
 

@@ -77,7 +77,6 @@ import stat
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -1214,7 +1213,7 @@ def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=No
     if result.returncode != 0:
         print(f"  ✗ claude mcp add failed (exit {result.returncode}).")
         return False
-    print(f"  ✓ Registered. Restart your Claude Code session to load tools.")
+    print("  ✓ Registered. Restart your Claude Code session to load tools.")
     return True
 
 
@@ -1961,7 +1960,7 @@ def _setup_api_token(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2003,8 +2002,8 @@ def _setup_api_token(service_key, s):
     hr("═")
     print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
-    print(f"    Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm and restart your session.")
+    print("    Rotate the PAT later by re-running this command with the same title.")
+    print("    Run `claude mcp list` to confirm and restart your session.")
     hr("═")
     return 0
 
@@ -2122,7 +2121,7 @@ def _setup_cookie_paste(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2165,8 +2164,8 @@ def _setup_cookie_paste(service_key, s):
     hr("═")
     print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
-    print(f"    Restart your Claude Code session to load tools.")
-    print(f"    Rotate cookies later by re-running this command with the same title.")
+    print("    Restart your Claude Code session to load tools.")
+    print("    Rotate cookies later by re-running this command with the same title.")
     hr("═")
     return 0
 
@@ -2466,7 +2465,7 @@ def _setup_entra_login(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2514,7 +2513,7 @@ def _setup_entra_login(service_key, s):
         print("       If `az` later logs out, the MCP server will fail until you `az login` again.")
     elif auth_method == "pat":
         print("    ⓘ Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    print("    Run `claude mcp list` to confirm, then restart your session.")
     hr("═")
     return 0
 
@@ -2680,7 +2679,7 @@ def _claude_mcp_add_http(title, url, headers, step_num=5):
     if result.returncode != 0:
         print(f"  ✗ claude mcp add failed (exit {result.returncode}).")
         return False
-    print(f"  ✓ Registered. Restart your Claude Code session to load tools.")
+    print("  ✓ Registered. Restart your Claude Code session to load tools.")
     return True
 
 
@@ -2773,7 +2772,7 @@ def _setup_remote_http(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2797,8 +2796,8 @@ def _setup_remote_http(service_key, s):
     print(f"  ✓ Done. '{title}' is registered, the PAT is verified, and the server answers MCP handshake.")
     print(f"    State:  {final_dir}")
     print(f"    Endpoint: {url}")
-    print(f"    Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    print("    Rotate the PAT later by re-running this command with the same title.")
+    print("    Run `claude mcp list` to confirm, then restart your session.")
     hr("═")
     return 0
 

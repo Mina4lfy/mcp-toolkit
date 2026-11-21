@@ -1,17 +1,16 @@
 # mcp-toolkit
 
-Plug-and-play setup for MCP servers inside Claude Code, across seven providers: Google (Gmail / Drive / Calendar, via **local stdio community servers** behind one Desktop OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (GitHub is provider-hosted and Google runs community packages via npx, so neither has a submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
+Plug-and-play setup for MCP servers inside Claude Code, across six providers: Google (Gmail / Drive / Calendar, via **local stdio community servers** behind one Desktop OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (GitHub is provider-hosted and Google runs community packages via npx, so neither has a submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
 
 ## What this gives you
 
-Claude Code MCP servers across seven providers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example a `minaalfykamel-Gmail` and a `minaalfy8-Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry). Google contributes one server per selected app (Gmail / Drive / Calendar) sharing a single OAuth client; the other providers are one server each.
+Claude Code MCP servers across six providers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example a `minaalfykamel-Gmail` and a `minaalfy8-Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry). Google contributes one server per selected app (Gmail / Drive / Calendar) sharing a single OAuth client; the other providers are one server each.
 
 | Service | Vendor (cloned in `vendor/`) | Launcher | Auth | Default scopes / env |
 | --- | --- | --- | --- | --- |
 | Google Workspace (Gmail / Drive / Calendar) | Local stdio community servers (`@gongrzhe/server-gmail-autoauth-mcp`, `@piotr-agier/google-drive-mcp`, `@cocal/google-calendar-mcp`) via npx | stdio | OAuth 2.0 (one Desktop client per account, per-app browser consent) | Gmail: `gmail.modify`, `gmail.settings.basic` · Drive: `drive`, `drive.file`, `docs`, `sheets`, `slides` · Calendar: `calendar` |
 | Atlassian (Jira + Confluence DC) | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) | uvx | Jira DC PAT | `JIRA_URL`, `JIRA_PERSONAL_TOKEN`; `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` (leave blank to derive from Jira — `JIRA_URL` + `/wiki` and the same PAT) |
 | Tempo (Jira time tracking) | [`tranzact/tempo-filler-mcp-server`](https://github.com/tranzact/tempo-filler-mcp-server) | npx | Jira DC PAT | `TEMPO_BASE_URL`, `TEMPO_PAT`, optional `TEMPO_DEFAULT_HOURS` |
-| LinkedIn | `vendor/linkedin-mcp/` (this toolkit) | uv (local source) | Cookie paste | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID`, optional timezone + working-hours |
 | Azure DevOps (Microsoft official) | [`microsoft/azure-devops-mcp`](https://github.com/microsoft/azure-devops-mcp) | npx | PAT (default, validated at setup) / `az login` / Entra browser | positional `<organization>`, flags `--authentication`, `-d`, `--tenant`; PAT modes set `PERSONAL_ACCESS_TOKEN` or `ADO_MCP_AUTH_TOKEN` |
 | Azure DevOps (PAT fallback) | [`Tiberriver256/mcp-server-azure-devops`](https://github.com/Tiberriver256/mcp-server-azure-devops) | npx | Azure DevOps PAT | `AZURE_DEVOPS_ORG_URL`, `AZURE_DEVOPS_AUTH_METHOD`, `AZURE_DEVOPS_PAT`, optional `AZURE_DEVOPS_DEFAULT_PROJECT` |
 | GitHub (official remote) | [`github/github-mcp-server`](https://github.com/github/github-mcp-server) (GitHub-hosted, no local install) | HTTP transport | GitHub PAT | endpoint `https://api.githubcopilot.com/mcp/`, header `Authorization: Bearer <PAT>` |
@@ -48,11 +47,7 @@ Claude Code MCP servers across seven providers — each titled after the account
 ./bin/setup-gitlab.sh                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
 ```
 
-The script branches on auth flavour. The Google entry follows `local_oauth` (local stdio servers + one Desktop OAuth client, per-app browser consent); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
-
-```bash
-./bin/setup-linkedin.sh     # LinkedIn (Voyager API + Playwright)
-```
+The script branches on auth flavour. The Google entry follows `local_oauth` (local stdio servers + one Desktop OAuth client, per-app browser consent); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
 
 ### Google Workspace — `local_oauth` flow (local stdio servers, one Desktop OAuth client)
 
@@ -79,40 +74,9 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 
 - **A server shows `✘ Failed to connect` after a restart** → the ~10s `googleapis` import lost the startup race. Ensure `MCP_TIMEOUT=120000` is in `~/.claude/settings.json` `env` (the setup sets it) and `/mcp reconnect all`.
 - **A Drive/Calendar tool hangs on first call** → you have `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_DRIVE_MCP_ACCESS_TOKEN` / `GOOGLE_ACCOUNT_MODE` exported; those switch the server to a different auth mode and it ignores its token file. Unset them in the shell that launches Claude Code (the setup warns — `claude mcp add --env` can't unset an inherited var).
-- **OAuth callback port busy** (`:3000` Gmail/Drive, `:3500-3505` Calendar) → free it before authorizing (a running Drive MCP squats `:3000`).
+- **OAuth callback port busy** (Gmail `:3000` only, Drive `:3000-3004`, Calendar `:3500-3505`) → setup names the process holding each busy port. It refuses Gmail consent while `:3000` is taken, and says which port Drive or Calendar falls back to.
 - **Gmail search errors "Metadata scope does not support 'q'"** → shouldn't occur on this flow (Gmail requests only `gmail.modify` + `gmail.settings.basic`); if it does, re-authorize Gmail.
 - **Tokens stop working after ~a week** → the consent screen is still in Testing. A re-run of setup flags each Testing-mode token it reuses (Google adds `refresh_token_expires_in` to those). Publish to production, delete the token file, and re-run to consent again.
-
-### LinkedIn — `cookie_paste` flow
-
-LinkedIn has no broadly-accessible official API. This toolkit's LinkedIn server uses cookie-based access against the Voyager mobile API (`linkedin-api` Python lib) plus a Playwright-driven browser session for post creation. **This violates LinkedIn's User Agreement §8.2** (no automated access outside their Marketing/Talent Developer Platform); enforcement is account-level (restriction / ban), not legal. The toolkit ships hard caps + working-hours gates + human-shaped random delays on every write tool, but you accept account-risk by using it.
-
-1. **Get the cookies** — log into LinkedIn in your browser normally (with 2FA). Open DevTools → Application/Storage → Cookies → `https://www.linkedin.com`. Copy the Value column for `li_at` (~120-char session cookie) and `JSESSIONID` (looks like `ajax:1234567890123456`).
-2. **Cookie + config prompts** — script asks for the two cookie values (read with `getpass`, no echo), optional account label, optional timezone (default `Europe/Berlin`), optional working-hours window (default 09-19).
-3. **Connection test** — script subprocess-runs `python -m linkedin_mcp.ping` with the staged env, which calls `get_user_profile()` on Voyager. Prints `Connected as: <your-name>` on success or `AUTH-FAILED` with the actual error.
-4. **Title prompt** — defaults to `<account-label-or-name-slug>-LinkedIn`.
-5. **Claude Code registration** — `claude mcp add --scope user "<title>" --env LINKEDIN_LI_AT=*** … -- uv run --directory vendor/linkedin-mcp linkedin-mcp`. The registration command's env values are redacted to `KEY=***` so the cookies never appear in logs.
-
-Cookies last ~90 days unless you log out / change password. Re-run `./bin/setup-linkedin.sh` with the same title to rotate.
-
-**Tool surface** (Phase 1 reads + Phase 2 writes):
-
-| Tool | Class | Cap | Notes |
-| --- | --- | --- | --- |
-| `search_jobs` | search | 200/day | Keywords + location + remote + experience + job-type filters |
-| `get_job` | read | 200/day | Full JD for a numeric job_id |
-| `get_recommended_jobs` | search | 200/day | Algorithm-driven feed (highest signal) |
-| `get_profile` | read | 200/day | By public_id (the `/in/<slug>` part of a profile URL) |
-| `search_people` | search | 200/day | People search with geo / company / school filters |
-| `get_feed` | read | 200/day | Recent posts from home feed |
-| `get_inbox` | read | 200/day | Recent DM conversations |
-| `send_connection_request` | connection_request | 20/day, 5/hr, work-hrs | 300-char optional note; LinkedIn weekly cap ~100 |
-| `send_message` | message | 40/day, 10/hr, work-hrs | Reply to thread or open new (1st-degree only without InMail) |
-| `react_to_post` | react | 50/day, 15/hr, work-hrs | like / praise / empathy / interest / appreciation / entertainment |
-| `comment_on_post` | comment | 10/day, 3/hr, work-hrs | Bot-detection most sensitive here — keep comments unique |
-| `create_post` | post | 3/day, 1/hr | Text-only via Playwright; images/video do manually |
-| `linkedin_whoami` | — | unbounded | Identity ping; use if other tools start failing |
-| `linkedin_throttle_status` | — | unbounded | Inspect cap usage live |
 
 ### Atlassian + Tempo — `api_token` flow
 
@@ -206,19 +170,17 @@ mcp-toolkit/
 │  ├─ setup-google.sh               # Google Workspace (local stdio community servers via npx) — pick apps, one Desktop OAuth client
 │  ├─ setup-atlassian.sh
 │  ├─ setup-tempo.sh
-│  ├─ setup-linkedin.sh
 │  ├─ setup-azure-devops.sh
 │  ├─ setup-azure-devops-tiberriver.sh
 │  ├─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
 │  └─ setup-gitlab.sh               # GitLab via zereight/gitlab-mcp (SaaS or self-hosted)
-├─ vendor/                          # upstream MCP servers (git submodules) + local linkedin-mcp
+├─ vendor/                          # upstream MCP servers (git submodules)
 │  │                                # (GitHub is provider-hosted; Google runs community pkgs via npx — no submodule either way)
 │  ├─ mcp-atlassian/                → sooperset/mcp-atlassian
 │  ├─ tempo-filler-mcp-server/      → tranzact/tempo-filler-mcp-server
 │  ├─ azure-devops-mcp/             → microsoft/azure-devops-mcp
 │  ├─ azure-devops-mcp-tiberriver/  → Tiberriver256/mcp-server-azure-devops
-│  ├─ gitlab-mcp/                   → zereight/gitlab-mcp (pinned v2.1.18)
-│  └─ linkedin-mcp/                 → local Python pkg in this toolkit (FastMCP + linkedin-api + Playwright)
+│  └─ gitlab-mcp/                   → zereight/gitlab-mcp (pinned v2.1.18)
 └─ state/                           # credentials + token caches per `<service>/<slug>` — gitignored
 ```
 
@@ -246,9 +208,19 @@ For most services, each has its own community-maintained MCP server with deep co
 
 **Google is the exception.** It uses three community vendors (`@gongrzhe` Gmail, `@piotr-agier` Drive, `@cocal` Calendar) as **local stdio servers behind one Desktop OAuth client** per account. [AgDR-0001](docs/agdr/AgDR-0001-official-google-workspace-mcp.md) briefly unified Google onto its official **hosted** Workspace MCP (one client, provider-hosted) — but those endpoints returned *"The caller does not have permission"* on every tool call for our accounts (unfixable client-side), so [AgDR-0002](docs/agdr/AgDR-0002-revert-google-to-local-stdio-servers.md) **reverted to the local servers**, which call the standard product APIs and work. The old fragmentation tax (per-app packages, Node-24 `node-fetch` breakage, a Drive server squatting `:3000`) is managed by the setup (it ensures the undici shim + raises `MCP_TIMEOUT`).
 
+## Bumping a pinned server
+
+Every launched package is pinned to an exact version ([AgDR-0003](docs/agdr/AgDR-0003-pin-every-launched-package.md)). To upgrade one:
+
+1. Read the upstream changelog between the two versions, looking for env-var, scope and auth changes.
+2. Change the version in `SERVICES` in `setup-mcp.py`.
+3. If the service has a `vendor/` submodule, move it to the same release tag (`cd vendor/<name> && git checkout vX.Y.Z`), check that the lines its `scopes_note` cites still say the same thing, and update the `@ <sha> (vX.Y.Z)` in the note and in the anti-fabrication list below.
+4. Run `python -m unittest discover -s tests`. `tests/test_pins.py` fails if a version is unpinned or differs from the cited release.
+5. Open a PR for review, then re-run that service's setup so Claude Code registers the new version.
+
 ## Adding another service later
 
-Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
+Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, have no submodule). Pin the package to an exact version either way. Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
 
 ## Anti-fabrication note
 
@@ -259,13 +231,13 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - Endpoints: `https://gmailmcp.googleapis.com/mcp/v1`, `https://drivemcp.googleapis.com/mcp/v1`, `https://calendarmcp.googleapis.com/mcp/v1`
   - Scopes observed live (2026-07): Gmail `mail.google.com/` + `gmail.modify/compose/readonly/metadata`; Drive `drive` + `drive.readonly` + `drive.file`; Calendar `calendar` + `calendar.app.created` + `calendar.events(.readonly/.freebusy/.owned/.owned.readonly/.public.readonly)` + `calendar.readonly`
   - Auth: one user-created OAuth 2.0 client (**Desktop app** is simplest and works via Google's loopback flow; a **Web application** client also works if it registers redirect `http://localhost:33418/callback`), registered via `claude mcp add --transport http --client-id … --client-secret --callback-port 33418`, then completed with `claude mcp login`
-- **Atlassian (sooperset)** @ `d8bc786`:
+- **Atlassian (sooperset)** @ `4e2b836` (v0.21.1):
   - `vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180` — `JIRA_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/confluence/config.py:104` — `CONFLUENCE_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/utils/environment.py:109,148` — PAT-env routing for both apps
 - **Tempo (tranzact/tempo-filler)** @ `b9db692` (v2.0.2):
   - `vendor/tempo-filler-mcp-server/src/index.ts:51-53` — `TEMPO_BASE_URL` / `TEMPO_PAT` / `TEMPO_DEFAULT_HOURS` are read here
-- **Azure DevOps (microsoft/azure-devops-mcp)** @ `1cd5d89` (v2.7.0 + 34 commits):
+- **Azure DevOps (microsoft/azure-devops-mcp)** @ `70e94c6` (v2.7.0):
   - `vendor/azure-devops-mcp/src/index.ts:32-39` — `<organization>` positional CLI arg
   - `vendor/azure-devops-mcp/src/index.ts:39-45` — `--domains` flag, default `'all'`
   - `vendor/azure-devops-mcp/src/index.ts:46-52` — `--authentication` flag, choices `interactive` / `azcli` / `env` / `envvar` / `pat`
@@ -285,3 +257,7 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - `vendor/gitlab-mcp/index.ts:1551` — `GITLAB_ALLOWED_PROJECT_IDS` is read here
 
 If a vendor changes its requested scopes / env vars upstream, the cloned submodule pin stays put until you explicitly update it (`cd vendor/<name> && git pull`). That's intentional — surprise scope / env changes are an audit problem.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). It covers this repo's own code and docs. The servers under `vendor/` and the npm packages the setup launches keep their own upstream licences.

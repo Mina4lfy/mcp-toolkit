@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import subprocess
 import tempfile
 import unittest
@@ -102,6 +103,25 @@ class RerunRepairsRegistrations(GoogleSetupCase):
         (self.state_root / "google" / HANDLE / "drive" / "tokens.json").unlink()
         self.run_setup(apps="gmail,drive,calendar")
         self.assertEqual([c[2] for c in self.auth_runs()], ["@piotr-agier/google-drive-mcp"])
+
+
+class TestingModeTokens(GoogleSetupCase):
+    def rerun(self, token_body):
+        self.register(["calendar"])
+        tok = self.state_root / "google" / HANDLE / "calendar" / "tokens.json"
+        tok.write_text(token_body)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.run_setup(apps="calendar")
+        return out.getvalue()
+
+    def test_reused_testing_mode_token_is_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "refresh_token_expires_in": 604799}}')
+        self.assertIn("Testing-mode token", out)
+
+    def test_production_token_is_not_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "expiry_date": 1}}')
+        self.assertNotIn("Testing-mode token", out)
 
 
 if __name__ == "__main__":

@@ -1447,10 +1447,16 @@ def _print_google_cloud_prep(s, add_keys, first_run):
             print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
         print(f"""
   2c. Configure the OAuth consent screen ({s['consent_url']}):
-        • User Type: External · add your Google account as a Test User
-        • ⚠ While in "Testing", Google EXPIRES refresh tokens after ~7 days — so the
-          servers would need re-auth weekly. PUBLISH the app (Testing → Production)
-          to make tokens durable.
+        • Best for one person: on a NEW project, pick User Type "Personal". It only
+          works for your own Google account, needs no verification, and its tokens
+          don't expire after 7 days. It can't be changed later.
+        • Otherwise User Type "External", and add your Google account as a Test User.
+          ⚠ While the app is "Testing", Google EXPIRES its refresh tokens 7 days after
+          consent, and the servers stop working. PUBLISH it (Testing → In production)
+          to keep tokens. Unverified, Google shows an "unverified app" screen at
+          consent (click through it), and allows 100 users in the project's lifetime.
+        • "Internal" also avoids the expiry, but only for a project in a Google Cloud
+          organisation (Workspace or Cloud Identity), not a personal gmail.com account.
       Add these scopes ("Scopes for Google APIs") — what the local servers request:""")
         for sc in scopes:
             print(f"        {sc}")
@@ -1634,6 +1640,22 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
     return True
 
 
+def _is_testing_mode_token(token_path):
+    """Google adds refresh_token_expires_in only to grants from a project in Testing."""
+    try:
+        data = json.loads(Path(token_path).read_text())
+    except (OSError, ValueError):
+        return False
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "refresh_token_expires_in" in node:
+                return True
+            stack.extend(node.values())
+    return False
+
+
 def _google_rotate_secret(service_key, s, state):
     step(1, "Rotate the OAuth client secret")
     print("  Provide the NEW client-secret JSON for the SAME Desktop OAuth client")
@@ -1813,6 +1835,10 @@ def _setup_local_oauth(service_key, s, args=None):
         if not reuse and not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
             print(f"  ⚠ skipping {app['service_name']} — not authorized.")
             continue
+        if reuse and _is_testing_mode_token(token_path):
+            print(f"  ⚠ {app['service_name']}: this is a Testing-mode token — Google revokes it")
+            print("    7 days after consent. Publish the consent screen to production, delete")
+            print(f"    {token_path.name}, and re-run setup to consent again.")
 
         env_pairs = {app["keys_env"]: str(keys_path), app["token_env"]: str(token_path)}
         if shim:

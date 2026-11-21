@@ -233,7 +233,7 @@ _PRIVATE_HOST_RE = re.compile(r"^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-
 def is_atlassian_cloud_url(url):
     """Cloud (Basic: email + API token) vs Server/DC (Bearer: PAT) branches on this.
 
-    Must agree with vendor/mcp-atlassian's utils/urls.py @ d8bc786 — if this says
+    Must agree with vendor/mcp-atlassian's utils/urls.py @ 4e2b836 — if this says
     DC where the vendor says Cloud, setup collects a PAT the server will never
     use and GH-17 reproduces. Suffix match (not `in`) so
     evil-atlassian.net.attacker.com stays DC.
@@ -281,7 +281,7 @@ SERVICES = {
         "apps": {
             "gmail": {
                 "service_name": "Gmail",
-                "package": "@gongrzhe/server-gmail-autoauth-mcp",
+                "package": "@gongrzhe/server-gmail-autoauth-mcp@1.1.11",
                 "keys_env": "GMAIL_OAUTH_PATH",        # → gcp-oauth.keys.json
                 "token_env": "GMAIL_CREDENTIALS_PATH", # → token file it writes
                 "token_file": "credentials.json",
@@ -300,7 +300,7 @@ SERVICES = {
             "drive": {
                 "service_name": "GoogleDrive",
                 # Also exposes Docs/Sheets/Slides/Calendar tools (120+ Workspace tools).
-                "package": "@piotr-agier/google-drive-mcp",
+                "package": "@piotr-agier/google-drive-mcp@2.13.0",
                 "keys_env": "GOOGLE_DRIVE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_DRIVE_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -326,7 +326,7 @@ SERVICES = {
             },
             "calendar": {
                 "service_name": "GoogleCalendar",
-                "package": "@cocal/google-calendar-mcp",
+                "package": "@cocal/google-calendar-mcp@2.8.1",
                 "keys_env": "GOOGLE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -350,7 +350,7 @@ SERVICES = {
         "label": "Atlassian (Jira + Confluence, Cloud or Data Center)",
         "short": "Atlassian",
         "service_name": "Atlassian",
-        "package": "mcp-atlassian",
+        "package": "mcp-atlassian@0.21.1",
         "title_source_env": "JIRA_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "pat_howto": (
@@ -373,7 +373,7 @@ SERVICES = {
             "id.atlassian.com); Data Center authenticates with a Bearer Personal\n"
             "Access Token. The two credential kinds are NOT interchangeable — this\n"
             "tool detects which applies from the URL and only asks for that pair.\n"
-            "Source pin: vendor/mcp-atlassian @ d8bc786\n"
+            "Source pin: vendor/mcp-atlassian @ 4e2b836 (v0.21.1)\n"
             "  src/mcp_atlassian/utils/urls.py:49        (is_atlassian_cloud_url)\n"
             "  src/mcp_atlassian/jira/config.py:257-300  (Cloud → JIRA_USERNAME + JIRA_API_TOKEN; DC → JIRA_PERSONAL_TOKEN)\n"
             "  src/mcp_atlassian/confluence/config.py:104 (CONFLUENCE_PERSONAL_TOKEN read)"
@@ -531,7 +531,7 @@ SERVICES = {
         "label": "Azure DevOps (Microsoft official)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@azure-devops/mcp",
+        "npx_package": "@azure-devops/mcp@2.7.0",
         "scopes_note": (
             "Auth options exposed by @azure-devops/mcp:\n"
             "  • interactive (default) — opens an Entra browser flow on first tool call\n"
@@ -539,7 +539,7 @@ SERVICES = {
             "  • pat                    — reads PERSONAL_ACCESS_TOKEN env (base64 'email:token')\n"
             "  • envvar                 — reads ADO_MCP_AUTH_TOKEN env (raw bearer token)\n"
             "  • env                    — Azure SDK env-credential chain (advanced)\n"
-            "Source pin: vendor/azure-devops-mcp @ 1cd5d89 (v2.7.0 + 34 commits)\n"
+            "Source pin: vendor/azure-devops-mcp @ 70e94c6 (v2.7.0)\n"
             "  src/index.ts:32-39    (organisation positional arg)\n"
             "  src/index.ts:39-45    (--domains, default 'all')\n"
             "  src/index.ts:46-52    (--authentication choices)\n"
@@ -557,7 +557,7 @@ SERVICES = {
         "label": "Azure DevOps (Tiberriver256 — PAT fallback)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@tiberriver256/mcp-server-azure-devops",
+        "npx_package": "@tiberriver256/mcp-server-azure-devops@0.1.45",
         "title_source_env": "AZURE_DEVOPS_ORG_URL",
         "title_source_kind": "ado_org_from_url",
         "pat_setup_url": "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate",
@@ -605,7 +605,7 @@ SERVICES = {
         "label": "Tempo (Jira time tracking, Data Center)",
         "short": "Tempo",
         "service_name": "Tempo",
-        "npx_package": "@tranzact/tempo-filler-mcp-server",
+        "npx_package": "@tranzact/tempo-filler-mcp-server@2.0.2",
         "title_source_env": "TEMPO_BASE_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "scopes_note": (
@@ -688,7 +688,7 @@ SERVICES = {
         "label": "GitLab (zereight/gitlab-mcp)",
         "short": "GitLab",
         "service_name": "GitLab",
-        "npx_package": "@zereight/mcp-gitlab",
+        "npx_package": "@zereight/mcp-gitlab@2.1.18",
         "title_source_env": "GITLAB_API_URL",
         "pat_setup_url": "https://docs.gitlab.com/user/profile/personal_access_tokens/",
         "pat_howto": (

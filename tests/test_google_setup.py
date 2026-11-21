@@ -101,7 +101,7 @@ class RerunRepairsRegistrations(GoogleSetupCase):
         self.register(ALL_APPS)
         (self.state_root / "google" / HANDLE / "drive" / "tokens.json").unlink()
         self.run_setup(apps="gmail,drive,calendar")
-        self.assertEqual([c[2] for c in self.auth_runs()], ["@piotr-agier/google-drive-mcp"])
+        self.assertEqual([c[2] for c in self.auth_runs()], [self.service["apps"]["drive"]["package"]])
 
 
 if __name__ == "__main__":

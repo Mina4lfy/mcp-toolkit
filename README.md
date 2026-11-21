@@ -246,9 +246,19 @@ For most services, each has its own community-maintained MCP server with deep co
 
 **Google is the exception.** It uses three community vendors (`@gongrzhe` Gmail, `@piotr-agier` Drive, `@cocal` Calendar) as **local stdio servers behind one Desktop OAuth client** per account. [AgDR-0001](docs/agdr/AgDR-0001-official-google-workspace-mcp.md) briefly unified Google onto its official **hosted** Workspace MCP (one client, provider-hosted) — but those endpoints returned *"The caller does not have permission"* on every tool call for our accounts (unfixable client-side), so [AgDR-0002](docs/agdr/AgDR-0002-revert-google-to-local-stdio-servers.md) **reverted to the local servers**, which call the standard product APIs and work. The old fragmentation tax (per-app packages, Node-24 `node-fetch` breakage, a Drive server squatting `:3000`) is managed by the setup (it ensures the undici shim + raises `MCP_TIMEOUT`).
 
+## Bumping a pinned server
+
+Every launched package is pinned to an exact version ([AgDR-0003](docs/agdr/AgDR-0003-pin-every-launched-package.md)). To upgrade one:
+
+1. Read the upstream changelog between the two versions, looking for env-var, scope and auth changes.
+2. Change the version in `SERVICES` in `setup-mcp.py`.
+3. If the service has a `vendor/` submodule, move it to the same release tag (`cd vendor/<name> && git checkout vX.Y.Z`), check that the lines its `scopes_note` cites still say the same thing, and update the `@ <sha> (vX.Y.Z)` in the note and in the anti-fabrication list below.
+4. Run `python -m unittest discover -s tests`. `tests/test_pins.py` fails if a version is unpinned or differs from the cited release.
+5. Open a PR for review, then re-run that service's setup so Claude Code registers the new version.
+
 ## Adding another service later
 
-Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
+Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, have no submodule). Pin the package to an exact version either way. Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
 
 ## Anti-fabrication note
 
@@ -259,13 +269,13 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - Endpoints: `https://gmailmcp.googleapis.com/mcp/v1`, `https://drivemcp.googleapis.com/mcp/v1`, `https://calendarmcp.googleapis.com/mcp/v1`
   - Scopes observed live (2026-07): Gmail `mail.google.com/` + `gmail.modify/compose/readonly/metadata`; Drive `drive` + `drive.readonly` + `drive.file`; Calendar `calendar` + `calendar.app.created` + `calendar.events(.readonly/.freebusy/.owned/.owned.readonly/.public.readonly)` + `calendar.readonly`
   - Auth: one user-created OAuth 2.0 client (**Desktop app** is simplest and works via Google's loopback flow; a **Web application** client also works if it registers redirect `http://localhost:33418/callback`), registered via `claude mcp add --transport http --client-id … --client-secret --callback-port 33418`, then completed with `claude mcp login`
-- **Atlassian (sooperset)** @ `d8bc786`:
+- **Atlassian (sooperset)** @ `4e2b836` (v0.21.1):
   - `vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180` — `JIRA_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/confluence/config.py:104` — `CONFLUENCE_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/utils/environment.py:109,148` — PAT-env routing for both apps
 - **Tempo (tranzact/tempo-filler)** @ `b9db692` (v2.0.2):
   - `vendor/tempo-filler-mcp-server/src/index.ts:51-53` — `TEMPO_BASE_URL` / `TEMPO_PAT` / `TEMPO_DEFAULT_HOURS` are read here
-- **Azure DevOps (microsoft/azure-devops-mcp)** @ `1cd5d89` (v2.7.0 + 34 commits):
+- **Azure DevOps (microsoft/azure-devops-mcp)** @ `70e94c6` (v2.7.0):
   - `vendor/azure-devops-mcp/src/index.ts:32-39` — `<organization>` positional CLI arg
   - `vendor/azure-devops-mcp/src/index.ts:39-45` — `--domains` flag, default `'all'`
   - `vendor/azure-devops-mcp/src/index.ts:46-52` — `--authentication` flag, choices `interactive` / `azcli` / `env` / `envvar` / `pat`

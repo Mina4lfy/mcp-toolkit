@@ -285,3 +285,7 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - `vendor/gitlab-mcp/index.ts:1551` — `GITLAB_ALLOWED_PROJECT_IDS` is read here
 
 If a vendor changes its requested scopes / env vars upstream, the cloned submodule pin stays put until you explicitly update it (`cd vendor/<name> && git pull`). That's intentional — surprise scope / env changes are an audit problem.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). It covers this repo's own code and docs. The servers under `vendor/` and the npm packages the setup launches keep their own upstream licences.

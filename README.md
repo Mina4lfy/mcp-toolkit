@@ -79,7 +79,7 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 
 - **A server shows `✘ Failed to connect` after a restart** → the ~10s `googleapis` import lost the startup race. Ensure `MCP_TIMEOUT=120000` is in `~/.claude/settings.json` `env` (the setup sets it) and `/mcp reconnect all`.
 - **A Drive/Calendar tool hangs on first call** → you have `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_DRIVE_MCP_ACCESS_TOKEN` / `GOOGLE_ACCOUNT_MODE` exported; those switch the server to a different auth mode and it ignores its token file. Unset them in the shell that launches Claude Code (the setup warns — `claude mcp add --env` can't unset an inherited var).
-- **OAuth callback port busy** (`:3000` Gmail/Drive, `:3500-3505` Calendar) → free it before authorizing (a running Drive MCP squats `:3000`).
+- **OAuth callback port busy** (Gmail `:3000` only, Drive `:3000-3004`, Calendar `:3500-3505`) → setup names the process holding each busy port. It refuses Gmail consent while `:3000` is taken, and says which port Drive or Calendar falls back to.
 - **Gmail search errors "Metadata scope does not support 'q'"** → shouldn't occur on this flow (Gmail requests only `gmail.modify` + `gmail.settings.basic`); if it does, re-authorize Gmail.
 - **Tokens stop working after ~a week** → the consent screen is still in Testing mode; publish it to Production.
 

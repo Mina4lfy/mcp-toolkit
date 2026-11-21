@@ -1483,6 +1483,18 @@ def _port_busy(port):
         return sk.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _port_holder(port):
+    """Name the process listening on `port` (via lsof), or a placeholder."""
+    try:
+        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
+                             capture_output=True, text=True, timeout=5, check=False).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "an unknown process"
+    pid = next((ln[1:] for ln in out.splitlines() if ln.startswith("p")), None)
+    cmd = next((ln[1:] for ln in out.splitlines() if ln.startswith("c")), None)
+    return f"{cmd} (pid {pid})" if pid and cmd else "an unknown process"
+
+
 def _warn_runtime_env_footguns():
     """Warn about ambient env vars that make the Drive/Calendar servers IGNORE their
     token files at RUNTIME. `claude mcp add --env` can only ADD vars to the spawned
@@ -1504,12 +1516,17 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
 
     None of the three servers auto-auth on normal MCP start (Drive's first tool call
     would hang), so this explicit browser step is mandatory before registration."""
-    busy = [p for p in app.get("auth_ports", []) if _port_busy(p)]
+    ports = app.get("auth_ports", [])
+    busy = [p for p in ports if _port_busy(p)]
+    free = [p for p in ports if p not in busy]
+    for p in busy:
+        print(f"  ⚠ loopback port {p} is in use by {_port_holder(p)}.")
+    if ports and not free:
+        print(f"  ✗ {app['service_name']} consent needs one of {ports} free for Google's")
+        print("    redirect. Stop that process and re-run setup.")
+        return False
     if busy:
-        print(f"  ⚠ loopback port(s) {busy} are in use — the OAuth callback needs one")
-        print(f"    of {app['auth_ports']} free (e.g. a running Drive MCP squats :3000).")
-        if not confirm("Continue anyway?", default=True):
-            return False
+        print(f"  ⓘ {app['service_name']} will use port {free[0]} for the consent callback.")
     env = os.environ.copy()
     # Strip auth-mode footguns: with these set the Drive server IGNORES tokens.json,
     # and GOOGLE_ACCOUNT_MODE would file Calendar tokens under a non-'normal' key.
@@ -1717,7 +1734,8 @@ def _setup_local_oauth(service_key, s, args=None):
             f"  {app['service_name']}: a token file already exists — keep it (skip browser)?",
             default=True))
         if not reuse and not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
-            print(f"  ⚠ skipping {app['service_name']} — not authorized.")
+            shutil.rmtree(app_dir, ignore_errors=True)
+            print(f"  ⚠ skipping {app['service_name']} — not authorized (its client keys were deleted).")
             continue
 
         env_pairs = {app["keys_env"]: str(keys_path), app["token_env"]: str(token_path)}

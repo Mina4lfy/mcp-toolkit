@@ -74,7 +74,6 @@ import stat
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -146,8 +145,10 @@ def find_claude_bin():
 def _claude_missing_message():
     override = os.environ.get("MCP_TOOLKIT_CLAUDE_BIN", "").strip()
     if override:
-        return (f"  ✗ MCP_TOOLKIT_CLAUDE_BIN points at '{override}', which is not an "
-                f"executable file.\n\n{CLAUDE_MISSING_HELP}")
+        return (
+            f"  ✗ MCP_TOOLKIT_CLAUDE_BIN points at '{override}', which is not an "
+            f"executable file.\n\n{CLAUDE_MISSING_HELP}"
+        )
     return CLAUDE_MISSING_HELP
 
 
@@ -220,7 +221,7 @@ _CLOUD_SUFFIXES = (
     ".jira.com",
     ".jira-dev.com",
     ".atlassian.com",
-    ".atlassian-us-gov.net",      # FedRAMP
+    ".atlassian-us-gov.net",  # FedRAMP
     ".atlassian-us-gov-mod.net",  # FedRAMP Moderate
 )
 
@@ -230,7 +231,7 @@ _PRIVATE_HOST_RE = re.compile(r"^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-
 def is_atlassian_cloud_url(url):
     """Cloud (Basic: email + API token) vs Server/DC (Bearer: PAT) branches on this.
 
-    Must agree with vendor/mcp-atlassian's utils/urls.py @ d8bc786 — if this says
+    Must agree with vendor/mcp-atlassian's utils/urls.py @ 4e2b836 — if this says
     DC where the vendor says Cloud, setup collects a PAT the server will never
     use and GH-17 reproduces. Suffix match (not `in`) so
     evil-atlassian.net.attacker.com stays DC.
@@ -263,8 +264,8 @@ SERVICES = {
     # unification (AgDR-0001 / GH-3). See AgDR-0002.
     "google": {
         "provider": "google",
-        "launcher": "npx",              # local stdio Node servers, one per app
-        "auth_kind": "local_oauth",     # per-app `auth` subcommand → token file
+        "launcher": "npx",  # local stdio Node servers, one per app
+        "auth_kind": "local_oauth",  # per-app `auth` subcommand → token file
         "label": "Google Workspace (local stdio)",
         "short": "Google",
         "service_name": "Google",
@@ -278,11 +279,11 @@ SERVICES = {
         "apps": {
             "gmail": {
                 "service_name": "Gmail",
-                "package": "@gongrzhe/server-gmail-autoauth-mcp",
-                "keys_env": "GMAIL_OAUTH_PATH",        # → gcp-oauth.keys.json
-                "token_env": "GMAIL_CREDENTIALS_PATH", # → token file it writes
+                "package": "@gongrzhe/server-gmail-autoauth-mcp@1.1.11",
+                "keys_env": "GMAIL_OAUTH_PATH",  # → gcp-oauth.keys.json
+                "token_env": "GMAIL_CREDENTIALS_PATH",  # → token file it writes
                 "token_file": "credentials.json",
-                "auth_ports": [3000],                  # hardcoded loopback callback
+                "auth_ports": [3000],  # hardcoded loopback callback
                 "apis": [
                     ("Gmail API", "gmail.googleapis.com"),
                 ],
@@ -297,7 +298,7 @@ SERVICES = {
             "drive": {
                 "service_name": "GoogleDrive",
                 # Also exposes Docs/Sheets/Slides/Calendar tools (120+ Workspace tools).
-                "package": "@piotr-agier/google-drive-mcp",
+                "package": "@piotr-agier/google-drive-mcp@2.13.0",
                 "keys_env": "GOOGLE_DRIVE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_DRIVE_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -323,7 +324,7 @@ SERVICES = {
             },
             "calendar": {
                 "service_name": "GoogleCalendar",
-                "package": "@cocal/google-calendar-mcp",
+                "package": "@cocal/google-calendar-mcp@2.8.1",
                 "keys_env": "GOOGLE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -347,7 +348,7 @@ SERVICES = {
         "label": "Atlassian (Jira + Confluence, Cloud or Data Center)",
         "short": "Atlassian",
         "service_name": "Atlassian",
-        "package": "mcp-atlassian",
+        "package": "mcp-atlassian@0.21.1",
         "title_source_env": "JIRA_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "pat_howto": (
@@ -370,7 +371,7 @@ SERVICES = {
             "id.atlassian.com); Data Center authenticates with a Bearer Personal\n"
             "Access Token. The two credential kinds are NOT interchangeable — this\n"
             "tool detects which applies from the URL and only asks for that pair.\n"
-            "Source pin: vendor/mcp-atlassian @ d8bc786\n"
+            "Source pin: vendor/mcp-atlassian @ 4e2b836 (v0.21.1)\n"
             "  src/mcp_atlassian/utils/urls.py:49        (is_atlassian_cloud_url)\n"
             "  src/mcp_atlassian/jira/config.py:257-300  (Cloud → JIRA_USERNAME + JIRA_API_TOKEN; DC → JIRA_PERSONAL_TOKEN)\n"
             "  src/mcp_atlassian/confluence/config.py:104 (CONFLUENCE_PERSONAL_TOKEN read)"
@@ -457,7 +458,7 @@ SERVICES = {
         "label": "Azure DevOps (Microsoft official)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@azure-devops/mcp",
+        "npx_package": "@azure-devops/mcp@2.7.0",
         "scopes_note": (
             "Auth options exposed by @azure-devops/mcp:\n"
             "  • interactive (default) — opens an Entra browser flow on first tool call\n"
@@ -465,7 +466,7 @@ SERVICES = {
             "  • pat                    — reads PERSONAL_ACCESS_TOKEN env (base64 'email:token')\n"
             "  • envvar                 — reads ADO_MCP_AUTH_TOKEN env (raw bearer token)\n"
             "  • env                    — Azure SDK env-credential chain (advanced)\n"
-            "Source pin: vendor/azure-devops-mcp @ 1cd5d89 (v2.7.0 + 34 commits)\n"
+            "Source pin: vendor/azure-devops-mcp @ 70e94c6 (v2.7.0)\n"
             "  src/index.ts:32-39    (organisation positional arg)\n"
             "  src/index.ts:39-45    (--domains, default 'all')\n"
             "  src/index.ts:46-52    (--authentication choices)\n"
@@ -483,7 +484,7 @@ SERVICES = {
         "label": "Azure DevOps (Tiberriver256 — PAT fallback)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@tiberriver256/mcp-server-azure-devops",
+        "npx_package": "@tiberriver256/mcp-server-azure-devops@0.1.45",
         "title_source_env": "AZURE_DEVOPS_ORG_URL",
         "title_source_kind": "ado_org_from_url",
         "pat_setup_url": "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate",
@@ -531,7 +532,7 @@ SERVICES = {
         "label": "Tempo (Jira time tracking, Data Center)",
         "short": "Tempo",
         "service_name": "Tempo",
-        "npx_package": "@tranzact/tempo-filler-mcp-server",
+        "npx_package": "@tranzact/tempo-filler-mcp-server@2.0.2",
         "title_source_env": "TEMPO_BASE_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "scopes_note": (
@@ -614,7 +615,7 @@ SERVICES = {
         "label": "GitLab (zereight/gitlab-mcp)",
         "short": "GitLab",
         "service_name": "GitLab",
-        "npx_package": "@zereight/mcp-gitlab",
+        "npx_package": "@zereight/mcp-gitlab@2.1.18",
         "title_source_env": "GITLAB_API_URL",
         "pat_setup_url": "https://docs.gitlab.com/user/profile/personal_access_tokens/",
         "pat_howto": (
@@ -700,6 +701,7 @@ SERVICES = {
 # UI helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def hr(char="─", width=78):
     print(char * width)
 
@@ -716,6 +718,7 @@ def prompt(question, default=None, validator=None, allow_empty=False, secret=Fal
         if secret:
             try:
                 import getpass
+
                 answer = getpass.getpass(f"  {question}{suffix}: ").strip()
             except Exception:
                 answer = input(f"  {question}{suffix}: ").strip()
@@ -747,6 +750,7 @@ def confirm(question, default=True):
 # ──────────────────────────────────────────────────────────────────────────────
 # Validators (named, used by api_token env-var prompts)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _v_url(value):
     return (URL_RE.match(value) is not None, "expected an http(s) URL")
@@ -785,6 +789,7 @@ VALIDATORS = {
 # Credentials & state-dir handling
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def slugify(text):
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
@@ -817,6 +822,7 @@ def write_env_file(path, pairs):
 # ──────────────────────────────────────────────────────────────────────────────
 # Claude Code registration
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _kill_quietly(proc):
     """Kill the whole process group, not just the launcher.
@@ -867,7 +873,17 @@ def _build_spawn_command(launcher, package, local_dir=None, console_script=None,
     return cmd
 
 
-def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, timeout=90, verify_tool=None, declared_env=None):
+def _mcp_handshake_test(
+    launcher,
+    package,
+    env_pairs,
+    extra_args=None,
+    local_dir=None,
+    console_script=None,
+    timeout=90,
+    verify_tool=None,
+    declared_env=None,
+):
     """Spawn the just-registered MCP server and drive an initialize +
     tools/list JSON-RPC round-trip over stdio. Returns (ok, message, tool_count).
 
@@ -892,7 +908,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     # An exported JIRA_* in the operator's shell would otherwise be inherited and
     # silently satisfy an auth mode this config didn't ask for, so the probe would
     # pass on credentials the registered server won't have (GH-17).
-    for k in (declared_env or ()):
+    for k in declared_env or ():
         if k not in env_pairs or env_pairs[k] == "":
             env.pop(k, None)
 
@@ -901,8 +917,13 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
     # tools/list, which silently reported "0 tools" as a pass (GH-17).
     try:
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, env=env, bufsize=1,
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            bufsize=1,
             start_new_session=True,
         )
     except FileNotFoundError:
@@ -911,8 +932,7 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         return False, f"failed to spawn server: {e}", 0
 
     _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE", re.I)
-    _raw = [v for k, v in env_pairs.items()
-            if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
+    _raw = [v for k, v in env_pairs.items() if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
     # Basic auth puts base64(user:token) on the wire, so the token never appears
     # verbatim for a Cloud server to echo — redact the encoded forms too.
     secrets = list(_raw)
@@ -964,20 +984,31 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         return not watchdog.is_alive()
 
     try:
-        _send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": "2024-11-05", "capabilities": {},
-            "clientInfo": {"name": "setup-mcp.py", "version": "0"}}})
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "setup-mcp.py", "version": "0"},
+                },
+            }
+        )
         init = _await(1)
         if init is None or "result" not in init:
             if _timed_out():
-                return False, (
-                    f"server didn't respond within {timeout}s "
-                    "(first-run npm/uvx install can be slow — retry once)"
-                ), 0
-            return False, (
-                "server didn't complete initialize.\n"
-                "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
-            ), 0
+                return (
+                    False,
+                    (f"server didn't respond within {timeout}s (first-run npm/uvx install can be slow — retry once)"),
+                    0,
+                )
+            return (
+                False,
+                ("server didn't complete initialize.\n    stderr tail:\n      " + _tail().replace("\n", "\n      ")),
+                0,
+            )
         sinfo = init["result"].get("serverInfo") or {}
         server_info = f"{sinfo.get('name', '?')} v{sinfo.get('version', '?')}"
 
@@ -996,8 +1027,14 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
         if not verify_tool:
             return True, f"{server_info} responded — {tools_count} tools exposed", tools_count
 
-        _send({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {
-            "name": verify_tool["name"], "arguments": verify_tool["arguments"]}})
+        _send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": verify_tool["name"], "arguments": verify_tool["arguments"]},
+            }
+        )
         probed = _await(3)
         # Fail closed: a probe that never answered is not a probe that passed.
         if probed is None:
@@ -1005,21 +1042,30 @@ def _mcp_handshake_test(launcher, package, env_pairs, extra_args=None, local_dir
             return False, f"auth probe ({verify_tool['name']}) {why}", tools_count
         verify_ok, verify_msg = _read_tool_call_result(probed)
         if not verify_ok:
-            return False, (
-                f"auth probe ({verify_tool['name']}) failed: {_redact(verify_msg)}\n"
-                "      (a privacy-restricted account lookup can also cause this — "
-                "if the credentials are known good, re-run and skip the probe)"
-            ), tools_count
-        return True, (
-            f"{server_info} responded — {tools_count} tools exposed; "
-            f"auth probe OK ({verify_tool['name']})"
-        ), tools_count
+            return (
+                False,
+                (
+                    f"auth probe ({verify_tool['name']}) failed: {_redact(verify_msg)}\n"
+                    "      (a privacy-restricted account lookup can also cause this — "
+                    "if the credentials are known good, re-run and skip the probe)"
+                ),
+                tools_count,
+            )
+        return (
+            True,
+            (f"{server_info} responded — {tools_count} tools exposed; auth probe OK ({verify_tool['name']})"),
+            tools_count,
+        )
     except OSError as e:
         # BrokenPipe and friends: the server died mid-exchange.
-        return False, (
-            f"server closed the connection mid-exchange ({e}).\n"
-            "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
-        ), 0
+        return (
+            False,
+            (
+                f"server closed the connection mid-exchange ({e}).\n"
+                "    stderr tail:\n      " + _tail().replace("\n", "\n      ")
+            ),
+            0,
+        )
     except Exception as e:
         # Never let a parse bug skip the caller's rollback.
         return False, _redact(f"verification error: {type(e).__name__}: {e}"), 0
@@ -1054,7 +1100,19 @@ def _read_tool_call_result(msg):
     return True, text[:200]
 
 
-def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, extra_args=None, local_dir=None, console_script=None, step_num=None, verify_tool=None, declared_env=None):
+def _finalize_with_handshake(
+    title,
+    final_dir,
+    launcher,
+    package,
+    env_pairs,
+    extra_args=None,
+    local_dir=None,
+    console_script=None,
+    step_num=None,
+    verify_tool=None,
+    declared_env=None,
+):
     """Run the post-registration handshake test (plus an optional real
     auth-probe tool call). On failure, roll back the `claude mcp add` so
     Claude Code doesn't carry a broken handle, and return False. State dir
@@ -1064,9 +1122,14 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
     probe_note = f" + a {verify_tool['name']} auth probe" if verify_tool else ""
     print(f"  Spawning the same command Claude Code will use, sending initialize + tools/list{probe_note}…")
     ok, msg, _ = _mcp_handshake_test(
-        launcher=launcher, package=package, env_pairs=env_pairs,
-        extra_args=extra_args, local_dir=local_dir, console_script=console_script,
-        verify_tool=verify_tool, declared_env=declared_env,
+        launcher=launcher,
+        package=package,
+        env_pairs=env_pairs,
+        extra_args=extra_args,
+        local_dir=local_dir,
+        console_script=console_script,
+        verify_tool=verify_tool,
+        declared_env=declared_env,
     )
     if ok:
         print(f"  ✓ {msg}")
@@ -1076,7 +1139,8 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
     print("  Rolling back the registration so the session won't load a broken server…")
     rm = subprocess.run(
         claude_cmd("mcp", "remove", "--scope", "user", title),
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if rm.returncode == 0:
         print(f"  ✓ unregistered '{title}'.")
@@ -1087,7 +1151,9 @@ def _finalize_with_handshake(title, final_dir, launcher, package, env_pairs, ext
     return False
 
 
-def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=None, console_script=None, extra_args=None):
+def claude_mcp_add(
+    title, launcher, package, env_pairs, step_num=6, local_dir=None, console_script=None, extra_args=None
+):
     cmd = claude_cmd("mcp", "add", "--scope", "user", title)
     for k, v in env_pairs.items():
         if v == "":
@@ -1120,7 +1186,7 @@ def claude_mcp_add(title, launcher, package, env_pairs, step_num=6, local_dir=No
     if result.returncode != 0:
         print(f"  ✗ claude mcp add failed (exit {result.returncode}).")
         return False
-    print(f"  ✓ Registered. Restart your Claude Code session to load tools.")
+    print("  ✓ Registered. Restart your Claude Code session to load tools.")
     return True
 
 
@@ -1133,6 +1199,7 @@ def _shellquote(s):
 # ──────────────────────────────────────────────────────────────────────────────
 # Setup — local_oauth branch (Google Workspace, LOCAL stdio community MCP servers)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def prompt_multiselect(question, options, preselected=None, allow_empty=False):
     """Toggle-style multiselect. `options` is a list of (key, label). Returns the
@@ -1172,6 +1239,7 @@ def prompt_multiselect(question, options, preselected=None, allow_empty=False):
 
 
 # --- Google shared-OAuth-client state (one client covers every selected app) ---
+
 
 def _list_google_handles(service_key):
     """Every registered Google account under state/<service_key>/, newest first.
@@ -1225,13 +1293,16 @@ def _load_google_state(service_key, handle):
 def _save_google_state(service_key, handle, client_id, client_secret, callback_port, apps):
     slug = slugify(handle) or "google"
     d = make_state_dir(service_key, slug)
-    write_env_file(d / "env", {
-        "GOOGLE_HANDLE": handle,
-        "GOOGLE_OAUTH_CLIENT_ID": client_id,
-        "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
-        "GOOGLE_OAUTH_CALLBACK_PORT": str(callback_port),
-        "GOOGLE_APPS": ",".join(apps),
-    })
+    write_env_file(
+        d / "env",
+        {
+            "GOOGLE_HANDLE": handle,
+            "GOOGLE_OAUTH_CLIENT_ID": client_id,
+            "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
+            "GOOGLE_OAUTH_CALLBACK_PORT": str(callback_port),
+            "GOOGLE_APPS": ",".join(apps),
+        },
+    )
     return d
 
 
@@ -1265,8 +1336,10 @@ def _latest_client_json():
     the file Google Cloud Console hands you in ~/Downloads/client_secret_*.json.
     Returns None if neither exists."""
     import glob
-    matches = (glob.glob(str(REPO_ROOT / "*client_secret*.json"))
-               + glob.glob(str(Path.home() / "Downloads" / "client_secret_*.json")))
+
+    matches = glob.glob(str(REPO_ROOT / "*client_secret*.json")) + glob.glob(
+        str(Path.home() / "Downloads" / "client_secret_*.json")
+    )
     matches = [m for m in matches if os.path.isfile(m)]
     matches.sort(key=os.path.getmtime, reverse=True)
     return matches[0] if matches else None
@@ -1315,15 +1388,21 @@ def _prompt_oauth_client():
     print("  Point me at the Desktop OAuth client JSON you downloaded,")
     print("  or type 'manual' to enter the Client ID / Secret by hand.")
     while True:
-        raw = prompt("Path to client JSON ('manual' to type creds)",
-                     default=default if default else None, allow_empty=not default)
+        raw = prompt(
+            "Path to client JSON ('manual' to type creds)",
+            default=default if default else None,
+            allow_empty=not default,
+        )
         if not raw or raw.strip().lower() == "manual":  # manual entry
             cid = prompt("OAuth Client ID", validator=VALIDATORS["nonempty"])
             sec = prompt(
                 "OAuth Client Secret",
-                validator=lambda v: (_looks_like_secret(v),
-                    "that looks malformed (a file path?) — paste the GOCSPX-… secret value, not the JSON path"),
-                secret=True)
+                validator=lambda v: (
+                    _looks_like_secret(v),
+                    "that looks malformed (a file path?) — paste the GOCSPX-… secret value, not the JSON path",
+                ),
+                secret=True,
+            )
             return cid.strip(), sec.strip()
         try:
             cid, sec = _read_oauth_client_json(raw)
@@ -1352,16 +1431,22 @@ def _print_google_cloud_prep(s, add_keys, first_run):
         for name, api_id in apis:
             print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
         print(f"""
-  2c. Configure the OAuth consent screen ({s['consent_url']}):
-        • User Type: External · add your Google account as a Test User
-        • ⚠ While in "Testing", Google EXPIRES refresh tokens after ~7 days — so the
-          servers would need re-auth weekly. PUBLISH the app (Testing → Production)
-          to make tokens durable.
+  2c. Configure the OAuth consent screen ({s["consent_url"]}):
+        • Best for one person: on a NEW project, pick User Type "Personal". It only
+          works for your own Google account, needs no verification, and its tokens
+          don't expire after 7 days. It can't be changed later.
+        • Otherwise User Type "External", and add your Google account as a Test User.
+          ⚠ While the app is "Testing", Google EXPIRES its refresh tokens 7 days after
+          consent, and the servers stop working. PUBLISH it (Testing → In production)
+          to keep tokens. Unverified, Google shows an "unverified app" screen at
+          consent (click through it), and allows 100 users in the project's lifetime.
+        • "Internal" also avoids the expiry, but only for a project in a Google Cloud
+          organisation (Workspace or Cloud Identity), not a personal gmail.com account.
       Add these scopes ("Scopes for Google APIs") — what the local servers request:""")
         for sc in scopes:
             print(f"        {sc}")
         print(f"""
-  2d. Create ONE OAuth 2.0 Client ID ({s['credentials_url']}):
+  2d. Create ONE OAuth 2.0 Client ID ({s["credentials_url"]}):
         • Application type:  Desktop app  (REQUIRED — the local servers use a
           loopback OAuth redirect and rely on Google's loopback exemption; a
           "Web application" client would need every callback port pre-registered).
@@ -1453,16 +1538,19 @@ def _write_gcp_oauth_keys(dest, client_id, client_secret):
     """Write a Desktop ('installed') OAuth client JSON the local servers read. It
     carries the client secret, so create it 0600 from the start (no world-readable
     TOCTOU window) rather than write-then-chmod."""
-    payload = json.dumps({
-        "installed": {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "redirect_uris": ["http://localhost"],
-        }
-    }, indent=2)
+    payload = json.dumps(
+        {
+            "installed": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "redirect_uris": ["http://localhost"],
+            }
+        },
+        indent=2,
+    )
     # O_CREAT honours the 0600 mode for a NEW file (umask can only tighten it);
     # the chmod below covers the case where dest pre-existed with looser perms.
     fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1478,6 +1566,7 @@ def _write_gcp_oauth_keys(dest, client_id, client_secret):
 
 def _port_busy(port):
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sk:
         sk.settimeout(0.3)
         return sk.connect_ex(("127.0.0.1", port)) == 0
@@ -1486,8 +1575,13 @@ def _port_busy(port):
 def _port_holder(port):
     """Name the process listening on `port` (via lsof), or a placeholder."""
     try:
-        out = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
-                             capture_output=True, text=True, timeout=5, check=False).stdout
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return "an unknown process"
     pid = next((ln[1:] for ln in out.splitlines() if ln.startswith("p")), None)
@@ -1500,9 +1594,16 @@ def _warn_runtime_env_footguns():
     token files at RUNTIME. `claude mcp add --env` can only ADD vars to the spawned
     server — it cannot UNSET one the server inherits from the shell that launches
     Claude Code. If these are exported, auth succeeds but the first tool call hangs."""
-    hits = [k for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
-                        "GOOGLE_DRIVE_MCP_REFRESH_TOKEN", "GOOGLE_ACCOUNT_MODE")
-            if os.environ.get(k)]
+    hits = [
+        k
+        for k in (
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
+            "GOOGLE_DRIVE_MCP_REFRESH_TOKEN",
+            "GOOGLE_ACCOUNT_MODE",
+        )
+        if os.environ.get(k)
+    ]
     if hits:
         print(f"\n  ⚠ {', '.join(hits)} set in your environment — the Drive/Calendar")
         print("    server would switch to service-account / external-token / alt-account")
@@ -1530,8 +1631,12 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
     env = os.environ.copy()
     # Strip auth-mode footguns: with these set the Drive server IGNORES tokens.json,
     # and GOOGLE_ACCOUNT_MODE would file Calendar tokens under a non-'normal' key.
-    for k in ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
-              "GOOGLE_DRIVE_MCP_REFRESH_TOKEN", "GOOGLE_ACCOUNT_MODE"):
+    for k in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_DRIVE_MCP_ACCESS_TOKEN",
+        "GOOGLE_DRIVE_MCP_REFRESH_TOKEN",
+        "GOOGLE_ACCOUNT_MODE",
+    ):
         env.pop(k, None)
     env[app["keys_env"]] = str(keys_path)
     env[app["token_env"]] = str(token_path)
@@ -1555,6 +1660,22 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
         pass
     print(f"  ✓ {app['service_name']} authorized.")
     return True
+
+
+def _is_testing_mode_token(token_path):
+    """Google adds refresh_token_expires_in only to grants from a project in Testing."""
+    try:
+        data = json.loads(Path(token_path).read_text())
+    except (OSError, ValueError):
+        return False
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "refresh_token_expires_in" in node:
+                return True
+            stack.extend(node.values())
+    return False
 
 
 def _google_rotate_secret(service_key, s, state):
@@ -1590,8 +1711,14 @@ def prompt_select(question, options):
 
 def _prompt_new_handle(existing):
     while True:
-        h = slugify(prompt("New account handle (e.g. your email prefix, like 'minaalfy8')",
-                           validator=VALIDATORS["nonempty"])) or ""
+        h = (
+            slugify(
+                prompt(
+                    "New account handle (e.g. your email prefix, like 'minaalfy8')", validator=VALIDATORS["nonempty"]
+                )
+            )
+            or ""
+        )
         if not h:
             print("    ✗ handle can't be empty")
             continue
@@ -1639,8 +1766,10 @@ def _setup_local_oauth(service_key, s, args=None):
     state = _load_google_state(service_key, handle)
     registered = list(state["apps"]) if state else []
     if state:
-        print(f"\n  Managing '{handle}' — client {state.get('client_id','')[:20]}…,"
-              f" registered apps: {', '.join(sorted(registered)) or '(none)'}")
+        print(
+            f"\n  Managing '{handle}' — client {state.get('client_id', '')[:20]}…,"
+            f" registered apps: {', '.join(sorted(registered)) or '(none)'}"
+        )
     else:
         print(f"\n  New account '{handle}' — this gets its own OAuth client.")
 
@@ -1660,8 +1789,8 @@ def _setup_local_oauth(service_key, s, args=None):
     else:
         options = [(k, f"{apps[k]['service_name']}  ({apps[k]['package']})") for k in apps]
         desired = prompt_multiselect(
-            "Select the Google apps to enable:", options, preselected=registered,
-            allow_empty=bool(registered))
+            "Select the Google apps to enable:", options, preselected=registered, allow_empty=bool(registered)
+        )
     desired_set = set(desired)
     to_add = [k for k in apps if k in desired_set and k not in registered]
     to_remove = [k for k in apps if k in registered and k not in desired_set]
@@ -1681,8 +1810,7 @@ def _setup_local_oauth(service_key, s, args=None):
     # --client-secret / prompt.
     client_id = secret = ""
     if to_add:
-        stored_ok = (state and state.get("client_id")
-                     and _looks_like_secret(state.get("client_secret", "")))
+        stored_ok = state and state.get("client_id") and _looks_like_secret(state.get("client_secret", ""))
         if cli_secret:
             try:
                 client_id, secret = _read_oauth_client_json(cli_secret)
@@ -1696,8 +1824,7 @@ def _setup_local_oauth(service_key, s, args=None):
                 _print_google_cloud_prep(s, to_add, first_run=False)
             else:
                 _print_google_cloud_prep(s, desired, first_run=True)
-        elif stored_ok and confirm(
-                f"Reuse the stored OAuth client {state['client_id'][:24]}…?", default=True):
+        elif stored_ok and confirm(f"Reuse the stored OAuth client {state['client_id'][:24]}…?", default=True):
             client_id, secret = state["client_id"], state["client_secret"]
             _print_google_cloud_prep(s, to_add, first_run=False)
         else:
@@ -1730,20 +1857,26 @@ def _setup_local_oauth(service_key, s, args=None):
             _write_gcp_oauth_keys(keys_path, client_id, secret)
 
         # Mint the token unless a valid one already exists and the user keeps it.
-        reuse = token_path.exists() and (k in keep or confirm(
-            f"  {app['service_name']}: a token file already exists — keep it (skip browser)?",
-            default=True))
+        reuse = token_path.exists() and (
+            k in keep
+            or confirm(f"  {app['service_name']}: a token file already exists — keep it (skip browser)?", default=True)
+        )
         if not reuse and not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
             shutil.rmtree(app_dir, ignore_errors=True)
             print(f"  ⚠ skipping {app['service_name']} — not authorized (its client keys were deleted).")
             continue
+        if reuse and _is_testing_mode_token(token_path):
+            print(f"  ⚠ {app['service_name']}: this is a Testing-mode token — Google revokes it")
+            print("    7 days after consent. Publish the consent screen to production, delete")
+            print(f"    {token_path.name}, and re-run setup to consent again.")
 
         env_pairs = {app["keys_env"]: str(keys_path), app["token_env"]: str(token_path)}
         if shim:
             env_pairs["NODE_OPTIONS"] = f'--require "{shim}"'
         title = titles[k]
-        subprocess.run(claude_cmd("mcp", "remove", "--scope", "user", title),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            claude_cmd("mcp", "remove", "--scope", "user", title), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         if claude_mcp_add(title, "npx", app["package"], env_pairs, step_num=4):
             added_ok.append(k)
 
@@ -1780,6 +1913,7 @@ def _setup_local_oauth(service_key, s, args=None):
 # Setup — api_token branch (Atlassian Cloud/DC, Tempo, Azure DevOps, GitLab)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _spec_applies(spec, values):
     """Evaluate a spec's applies_if against values collected so far this loop.
     No applies_if key = always applies (no-op for other api_token services)."""
@@ -1792,20 +1926,20 @@ def _spec_applies(spec, values):
 def _setup_api_token(service_key, s):
     step(1, f"Generate a Personal Access Token for {s['label']}")
     howto = s.get("pat_howto") or (
-        'How to create a Jira DC Personal Access Token:\n'
-        '    1. Sign in to your Jira instance in a browser.\n'
+        "How to create a Jira DC Personal Access Token:\n"
+        "    1. Sign in to your Jira instance in a browser.\n"
         '    2. Open your profile menu (top-right avatar) → "Personal Access Tokens"\n'
-        '       (Data Center / Server only — Cloud uses API tokens instead).\n'
+        "       (Data Center / Server only — Cloud uses API tokens instead).\n"
         '    3. Click "Create token", give it a name (e.g. "Claude Code MCP"),\n'
-        '       set expiry as your security policy requires, and copy the token.\n'
-        '    4. Paste it below when prompted.'
+        "       set expiry as your security policy requires, and copy the token.\n"
+        "    4. Paste it below when prompted."
     )
     print(f"""
   {howto}
 
-  Reference: {s['pat_setup_url']}
+  Reference: {s["pat_setup_url"]}
 
-  Notes: {s['scopes_note']}
+  Notes: {s["scopes_note"]}
 """)
     input("  Press Enter once you have your PAT ready… ")
 
@@ -1885,7 +2019,7 @@ def _setup_api_token(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -1917,9 +2051,13 @@ def _setup_api_token(service_key, s):
         }
 
     if not _finalize_with_handshake(
-        title=title, final_dir=final_dir,
-        launcher=s["launcher"], package=package, env_pairs=values,
-        step_num=6, verify_tool=verify_tool,
+        title=title,
+        final_dir=final_dir,
+        launcher=s["launcher"],
+        package=package,
+        env_pairs=values,
+        step_num=6,
+        verify_tool=verify_tool,
         declared_env=[spec["name"] for spec in s["env_vars"]],
     ):
         return 1
@@ -1927,8 +2065,8 @@ def _setup_api_token(service_key, s):
     hr("═")
     print(f"  ✓ Done. '{title}' is registered and verified.")
     print(f"    State:  {final_dir}")
-    print(f"    Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm and restart your session.")
+    print("    Rotate the PAT later by re-running this command with the same title.")
+    print("    Run `claude mcp list` to confirm and restart your session.")
     hr("═")
     return 0
 
@@ -2228,7 +2366,7 @@ def _setup_entra_login(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2259,9 +2397,13 @@ def _setup_entra_login(service_key, s):
         return 1
 
     if not _finalize_with_handshake(
-        title=title, final_dir=final_dir,
-        launcher=s["launcher"], package=s["npx_package"], env_pairs=env_pairs,
-        extra_args=extra_args, step_num=7,
+        title=title,
+        final_dir=final_dir,
+        launcher=s["launcher"],
+        package=s["npx_package"],
+        env_pairs=env_pairs,
+        extra_args=extra_args,
+        step_num=7,
         declared_env=[spec["name"] for spec in s.get("env_vars", [])],
     ):
         return 1
@@ -2276,7 +2418,7 @@ def _setup_entra_login(service_key, s):
         print("       If `az` later logs out, the MCP server will fail until you `az login` again.")
     elif auth_method == "pat":
         print("    ⓘ Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    print("    Run `claude mcp list` to confirm, then restart your session.")
     hr("═")
     return 0
 
@@ -2284,6 +2426,7 @@ def _setup_entra_login(service_key, s):
 # ──────────────────────────────────────────────────────────────────────────────
 # Setup — remote_http branch (GitHub via the official remote MCP server)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _github_probe_token(pat, timeout=15):
     """Probe https://api.github.com/user with the PAT to confirm it's valid
@@ -2317,7 +2460,11 @@ def _github_probe_token(pat, timeout=15):
         if e.code == 401:
             return False, None, "401 Unauthorized — token is invalid, expired, or revoked"
         if e.code == 403:
-            return False, None, "403 Forbidden — token blocked or rate-limited (check SSO authorisation if org-protected)"
+            return (
+                False,
+                None,
+                "403 Forbidden — token blocked or rate-limited (check SSO authorisation if org-protected)",
+            )
         return False, None, f"HTTP {e.code} — {e.reason}"
     except URLError as e:
         return False, None, f"Network error reaching api.github.com: {e.reason}"
@@ -2336,7 +2483,7 @@ def _parse_rpc_response(raw, content_type):
             line = line.strip()
             if not line.startswith("data:"):
                 continue
-            payload = line[len("data:"):].strip()
+            payload = line[len("data:") :].strip()
             if not payload:
                 continue
             try:
@@ -2442,7 +2589,7 @@ def _claude_mcp_add_http(title, url, headers, step_num=5):
     if result.returncode != 0:
         print(f"  ✗ claude mcp add failed (exit {result.returncode}).")
         return False
-    print(f"  ✓ Registered. Restart your Claude Code session to load tools.")
+    print("  ✓ Registered. Restart your Claude Code session to load tools.")
     return True
 
 
@@ -2461,7 +2608,8 @@ def _finalize_with_http_handshake(title, final_dir, url, headers, step_num=None)
     print("  Rolling back the registration so the session won't load a broken server…")
     rm = subprocess.run(
         claude_cmd("mcp", "remove", "--scope", "user", title),
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if rm.returncode == 0:
         print(f"  ✓ unregistered '{title}'.")
@@ -2483,9 +2631,9 @@ def _setup_remote_http(service_key, s):
   'Authorization: Bearer <PAT>' header on the HTTP transport.
 
   Create the token here:
-    {s['pat_setup_url']}
+    {s["pat_setup_url"]}
 
-  Notes: {s['scopes_note']}
+  Notes: {s["scopes_note"]}
 """)
     input("  Press Enter once you have your PAT ready… ")
 
@@ -2535,7 +2683,7 @@ def _setup_remote_http(service_key, s):
             print("     Pick a different title or remove the existing state dir first.")
             return 1
         shutil.rmtree(final_dir)
-        print(f"  ✓ removed old state dir")
+        print("  ✓ removed old state dir")
     if final_dir != state_dir:
         state_dir.rename(final_dir)
         env_path = final_dir / "env"
@@ -2559,8 +2707,8 @@ def _setup_remote_http(service_key, s):
     print(f"  ✓ Done. '{title}' is registered, the PAT is verified, and the server answers MCP handshake.")
     print(f"    State:  {final_dir}")
     print(f"    Endpoint: {url}")
-    print(f"    Rotate the PAT later by re-running this command with the same title.")
-    print(f"    Run `claude mcp list` to confirm, then restart your session.")
+    print("    Rotate the PAT later by re-running this command with the same title.")
+    print("    Run `claude mcp list` to confirm, then restart your session.")
     hr("═")
     return 0
 
@@ -2568,6 +2716,7 @@ def _setup_remote_http(service_key, s):
 # ──────────────────────────────────────────────────────────────────────────────
 # Top-level service setup
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def cmd_setup(service_key, args=None):
     if service_key not in SERVICES:
@@ -2601,6 +2750,7 @@ def cmd_setup(service_key, args=None):
 # Doctor
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def cmd_doctor():
     print("\n=== Registered MCP servers (per `claude mcp list`) ===")
     if require_claude_bin():
@@ -2630,6 +2780,7 @@ def cmd_doctor():
 # Entry
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     ap = argparse.ArgumentParser(
         prog="setup-mcp.py",
@@ -2639,14 +2790,21 @@ def main():
     for key, cfg in SERVICES.items():
         p = sub.add_parser(key, help=f"Set up the {cfg['label']} MCP server.")
         if cfg.get("auth_kind") == "local_oauth":
-            p.add_argument("--client-secret", metavar="PATH",
-                           help="Path to the downloaded Desktop OAuth client-secret JSON "
-                                "(skips the 'point me at the JSON' prompt; runs non-interactively).")
-            p.add_argument("--handle", metavar="NAME",
-                           help="Account handle to set up (e.g. minaalfykamel) without the menu.")
-            p.add_argument("--apps", metavar="LIST",
-                           help="Comma-separated apps to enable (e.g. gmail,drive,calendar), "
-                                "or 'none' to remove every app from the account.")
+            p.add_argument(
+                "--client-secret",
+                metavar="PATH",
+                help="Path to the downloaded Desktop OAuth client-secret JSON "
+                "(skips the 'point me at the JSON' prompt; runs non-interactively).",
+            )
+            p.add_argument(
+                "--handle", metavar="NAME", help="Account handle to set up (e.g. minaalfykamel) without the menu."
+            )
+            p.add_argument(
+                "--apps",
+                metavar="LIST",
+                help="Comma-separated apps to enable (e.g. gmail,drive,calendar), "
+                "or 'none' to remove every app from the account.",
+            )
     sub.add_parser("doctor", help="List registered servers and their local state.")
     args = ap.parse_args()
     if args.service == "doctor":

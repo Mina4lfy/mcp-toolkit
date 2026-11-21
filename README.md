@@ -63,7 +63,7 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 ```
 
 1. **Pick the account, then the apps (STEP 0–1)** — choose **which Google account** to manage (or pass `--handle`); each account is independent (its own OAuth client + its own `<handle>-Gmail` / `<handle>-GoogleDrive` / `<handle>-GoogleCalendar` servers), so several coexist (e.g. `minaalfy8`, `minaalfykamel`). Then a multiselect app-picker (or `--apps gmail,drive,calendar`) computes `add` / `remove` / `keep`.
-2. **Cloud Console prep (STEP 2)** — first run prints the steps: create/select a project; enable the **product** APIs (`gmail`, `drive`/`docs`/`sheets`/`slides`, `calendar-json`.googleapis.com); add the servers' scopes to ONE consent screen (+ add yourself as a Test User); create **one OAuth Client ID of type Desktop app** — **required**, because the servers use a loopback OAuth redirect and rely on Google's loopback exemption (a Web client would need every callback port pre-registered). ⚠ While the consent screen is in **Testing**, Google expires refresh tokens after ~7 days — **publish it to Production** for durable tokens. Adding apps later prints only the *incremental* APIs + scopes.
+2. **Cloud Console prep (STEP 2)** — first run prints the steps: create/select a project; enable the **product** APIs (`gmail`, `drive`/`docs`/`sheets`/`slides`, `calendar-json`.googleapis.com); add the servers' scopes to ONE consent screen (+ add yourself as a Test User); create **one OAuth Client ID of type Desktop app** — **required**, because the servers use a loopback OAuth redirect and rely on Google's loopback exemption (a Web client would need every callback port pre-registered). ⚠ While the consent screen is in **Testing**, Google revokes refresh tokens 7 days after consent ([Google: refresh token expiration](https://developers.google.com/identity/protocols/oauth2#expiration)). For one person, the best choice on a **new** project is user type **Personal**: it works only for your own account, needs no verification, and its tokens don't expire ([Manage App Audience](https://support.google.com/cloud/answer/15549945)). It can't be changed later. On an existing **External** project, **publish it to In production**: unverified, Google shows an "unverified app" screen at consent and allows 100 users over the project's lifetime ([unverified apps](https://support.google.com/cloud/answer/7454865)). **Internal** also avoids the expiry, but needs a Google Cloud organisation (Workspace or Cloud Identity). Adding apps later prints only the *incremental* APIs + scopes.
 3. **Credentials (STEP 3)** — point the setup at the downloaded **Desktop** client JSON via `--client-secret <path>`, or the prompt (default scans the repo root's `*_client_secret_*.json` and `~/Downloads/`). Client id + secret are written to a per-app `gcp-oauth.keys.json` (created `0600`) and recorded at `state/google/<handle>/env`; re-runs offer to reuse or replace it.
 4. **Authorize + register (STEP 4)** — for each added app the setup runs the package's **`auth` subcommand**, which opens your browser for consent and writes the app's token into `state/google/<handle>/<app>/`, then registers the stdio server: `claude mcp add --scope user --env <KEYS_ENV>=… --env <TOKEN_ENV>=… -- npx -y <package>`. It also ensures the Node-24 `node-fetch`→undici preload shim and raises `MCP_TIMEOUT` in `~/.claude/settings.json` (the servers take ~10s to boot). Deselected apps are removed with `claude mcp remove` (their local token deleted too).
 5. **Restart** your Claude Code session to load the new tools.
@@ -76,7 +76,7 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 - **A Drive/Calendar tool hangs on first call** → you have `GOOGLE_APPLICATION_CREDENTIALS` / `GOOGLE_DRIVE_MCP_ACCESS_TOKEN` / `GOOGLE_ACCOUNT_MODE` exported; those switch the server to a different auth mode and it ignores its token file. Unset them in the shell that launches Claude Code (the setup warns — `claude mcp add --env` can't unset an inherited var).
 - **OAuth callback port busy** (Gmail `:3000` only, Drive `:3000-3004`, Calendar `:3500-3505`) → setup names the process holding each busy port. It refuses Gmail consent while `:3000` is taken, and says which port Drive or Calendar falls back to.
 - **Gmail search errors "Metadata scope does not support 'q'"** → shouldn't occur on this flow (Gmail requests only `gmail.modify` + `gmail.settings.basic`); if it does, re-authorize Gmail.
-- **Tokens stop working after ~a week** → the consent screen is still in Testing mode; publish it to Production.
+- **Tokens stop working after ~a week** → the consent screen is still in Testing. A re-run of setup flags each Testing-mode token it reuses (Google adds `refresh_token_expires_in` to those). Publish to production, delete the token file, and re-run to consent again.
 
 ### Atlassian + Tempo — `api_token` flow
 
@@ -208,9 +208,19 @@ For most services, each has its own community-maintained MCP server with deep co
 
 **Google is the exception.** It uses three community vendors (`@gongrzhe` Gmail, `@piotr-agier` Drive, `@cocal` Calendar) as **local stdio servers behind one Desktop OAuth client** per account. [AgDR-0001](docs/agdr/AgDR-0001-official-google-workspace-mcp.md) briefly unified Google onto its official **hosted** Workspace MCP (one client, provider-hosted) — but those endpoints returned *"The caller does not have permission"* on every tool call for our accounts (unfixable client-side), so [AgDR-0002](docs/agdr/AgDR-0002-revert-google-to-local-stdio-servers.md) **reverted to the local servers**, which call the standard product APIs and work. The old fragmentation tax (per-app packages, Node-24 `node-fetch` breakage, a Drive server squatting `:3000`) is managed by the setup (it ensures the undici shim + raises `MCP_TIMEOUT`).
 
+## Bumping a pinned server
+
+Every launched package is pinned to an exact version ([AgDR-0003](docs/agdr/AgDR-0003-pin-every-launched-package.md)). To upgrade one:
+
+1. Read the upstream changelog between the two versions, looking for env-var, scope and auth changes.
+2. Change the version in `SERVICES` in `setup-mcp.py`.
+3. If the service has a `vendor/` submodule, move it to the same release tag (`cd vendor/<name> && git checkout vX.Y.Z`), check that the lines its `scopes_note` cites still say the same thing, and update the `@ <sha> (vX.Y.Z)` in the note and in the anti-fabrication list below.
+4. Run `python -m unittest discover -s tests`. `tests/test_pins.py` fails if a version is unpinned or differs from the cited release.
+5. Open a PR for review, then re-run that service's setup so Claude Code registers the new version.
+
 ## Adding another service later
 
-Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
+Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, have no submodule). Pin the package to an exact version either way. Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
 
 ## Anti-fabrication note
 
@@ -221,13 +231,13 @@ Each vendor's requested scopes / env vars are pulled directly from its source co
   - Endpoints: `https://gmailmcp.googleapis.com/mcp/v1`, `https://drivemcp.googleapis.com/mcp/v1`, `https://calendarmcp.googleapis.com/mcp/v1`
   - Scopes observed live (2026-07): Gmail `mail.google.com/` + `gmail.modify/compose/readonly/metadata`; Drive `drive` + `drive.readonly` + `drive.file`; Calendar `calendar` + `calendar.app.created` + `calendar.events(.readonly/.freebusy/.owned/.owned.readonly/.public.readonly)` + `calendar.readonly`
   - Auth: one user-created OAuth 2.0 client (**Desktop app** is simplest and works via Google's loopback flow; a **Web application** client also works if it registers redirect `http://localhost:33418/callback`), registered via `claude mcp add --transport http --client-id … --client-secret --callback-port 33418`, then completed with `claude mcp login`
-- **Atlassian (sooperset)** @ `d8bc786`:
+- **Atlassian (sooperset)** @ `4e2b836` (v0.21.1):
   - `vendor/mcp-atlassian/src/mcp_atlassian/jira/config.py:180` — `JIRA_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/confluence/config.py:104` — `CONFLUENCE_PERSONAL_TOKEN` is read here
   - `vendor/mcp-atlassian/src/mcp_atlassian/utils/environment.py:109,148` — PAT-env routing for both apps
 - **Tempo (tranzact/tempo-filler)** @ `b9db692` (v2.0.2):
   - `vendor/tempo-filler-mcp-server/src/index.ts:51-53` — `TEMPO_BASE_URL` / `TEMPO_PAT` / `TEMPO_DEFAULT_HOURS` are read here
-- **Azure DevOps (microsoft/azure-devops-mcp)** @ `1cd5d89` (v2.7.0 + 34 commits):
+- **Azure DevOps (microsoft/azure-devops-mcp)** @ `70e94c6` (v2.7.0):
   - `vendor/azure-devops-mcp/src/index.ts:32-39` — `<organization>` positional CLI arg
   - `vendor/azure-devops-mcp/src/index.ts:39-45` — `--domains` flag, default `'all'`
   - `vendor/azure-devops-mcp/src/index.ts:46-52` — `--authentication` flag, choices `interactive` / `azcli` / `env` / `envvar` / `pat`

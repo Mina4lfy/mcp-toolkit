@@ -7,8 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-_SPEC = importlib.util.spec_from_file_location(
-    "setup_mcp", Path(__file__).resolve().parent.parent / "setup-mcp.py")
+_SPEC = importlib.util.spec_from_file_location("setup_mcp", Path(__file__).resolve().parent.parent / "setup-mcp.py")
 setup_mcp = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(setup_mcp)
 
@@ -45,8 +44,7 @@ class GoogleSetupCase(unittest.TestCase):
             d.mkdir(parents=True)
             (d / "gcp-oauth.keys.json").write_text("{}")
             (d / self.service["apps"][app]["token_file"]).write_text("{}")
-        setup_mcp._save_google_state(
-            "google", HANDLE, "id.apps.googleusercontent.com", "GOCSPX-secret", "", apps)
+        setup_mcp._save_google_state("google", HANDLE, "id.apps.googleusercontent.com", "GOCSPX-secret", "", apps)
 
     def run_setup(self, apps=None, inputs=()):
         args = SimpleNamespace(client_secret=None, handle=HANDLE, apps=apps)
@@ -60,8 +58,9 @@ class GoogleSetupCase(unittest.TestCase):
 class RemoveEveryApp(GoogleSetupCase):
     def assert_all_removed(self, rc):
         self.assertEqual(rc, 0)
-        self.assertEqual(sorted(self.removed_titles()),
-                         sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
+        self.assertEqual(
+            sorted(self.removed_titles()), sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar"))
+        )
         self.assertEqual(setup_mcp._load_google_state("google", HANDLE)["apps"], [])
         for app in ALL_APPS:
             self.assertFalse((self.state_root / "google" / HANDLE / app).exists())
@@ -91,18 +90,16 @@ class RerunRepairsRegistrations(GoogleSetupCase):
         self.register(ALL_APPS)
         self.assertEqual(self.run_setup(apps="gmail,drive,calendar"), 0)
         added = self.added()
-        self.assertEqual(sorted(added), sorted(
-            f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
+        self.assertEqual(sorted(added), sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
         gmail_dir = self.state_root / "google" / HANDLE / "gmail"
-        self.assertIn(f"GMAIL_CREDENTIALS_PATH={gmail_dir / 'credentials.json'}",
-                      added[f"{HANDLE}-Gmail"])
+        self.assertIn(f"GMAIL_CREDENTIALS_PATH={gmail_dir / 'credentials.json'}", added[f"{HANDLE}-Gmail"])
         self.assertEqual(self.auth_runs(), [])
 
     def test_kept_app_without_a_token_is_authorized_again(self):
         self.register(ALL_APPS)
         (self.state_root / "google" / HANDLE / "drive" / "tokens.json").unlink()
         self.run_setup(apps="gmail,drive,calendar")
-        self.assertEqual([c[2] for c in self.auth_runs()], ["@piotr-agier/google-drive-mcp"])
+        self.assertEqual([c[2] for c in self.auth_runs()], [self.service["apps"]["drive"]["package"]])
 
 
 class ConsentPorts(GoogleSetupCase):
@@ -113,8 +110,7 @@ class ConsentPorts(GoogleSetupCase):
         self._patch(setup_mcp, "_port_busy", lambda port: port in busy)
         self._patch(setup_mcp, "_port_holder", lambda port: "node (pid 42)")
         with mock.patch("sys.stdout", out):
-            return setup_mcp._run_google_app_auth(
-                app, d / "gcp-oauth.keys.json", d / app["token_file"], d, None)
+            return setup_mcp._run_google_app_auth(app, d / "gcp-oauth.keys.json", d / app["token_file"], d, None)
 
     def npx_calls(self):
         return [c for c in self.claude_calls if c[0] == "npx"]
@@ -136,6 +132,25 @@ class ConsentPorts(GoogleSetupCase):
         self.register(["drive", "calendar"])
         self.run_setup(apps="gmail,drive,calendar", inputs=[""])
         self.assertFalse((self.state_root / "google" / HANDLE / "gmail").exists())
+
+
+class TestingModeTokens(GoogleSetupCase):
+    def rerun(self, token_body):
+        self.register(["calendar"])
+        tok = self.state_root / "google" / HANDLE / "calendar" / "tokens.json"
+        tok.write_text(token_body)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.run_setup(apps="calendar")
+        return out.getvalue()
+
+    def test_reused_testing_mode_token_is_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "refresh_token_expires_in": 604799}}')
+        self.assertIn("Testing-mode token", out)
+
+    def test_production_token_is_not_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "expiry_date": 1}}')
+        self.assertNotIn("Testing-mode token", out)
 
 
 if __name__ == "__main__":

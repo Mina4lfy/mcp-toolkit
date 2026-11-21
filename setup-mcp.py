@@ -14,12 +14,11 @@ Usage:
     ./setup-mcp.py azure-devops-tiberriver   # Community PAT fallback
     ./setup-mcp.py github                    # GitHub official remote server (HTTP + PAT)
     ./setup-mcp.py gitlab                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
-    ./setup-mcp.py linkedin
     ./setup-mcp.py doctor                    # list registered MCPs + their state
 
 Or use the wrapper scripts under ./bin/.
 
-Five auth flavours are supported:
+Four auth flavours are supported:
 
   • local_oauth  (Google Workspace — LOCAL stdio community MCP servers)
     An idempotent converge flow: re-running reads existing state and applies only
@@ -47,8 +46,6 @@ Five auth flavours are supported:
     3. Writes `state/<svc>/<slug>/env` (mode 600) for rotation/inspection.
     4. Title default is `<host-slug>-<ServiceName>` (derived from the URL you entered).
     5. Registers via `claude mcp add --scope user --env KEY=VAL ... -- <launcher> <pkg>`.
-
-  • cookie_paste  (LinkedIn — Voyager via session cookies)
 
   • entra_login  (Azure DevOps via Microsoft @azure-devops/mcp)
     1. Prompts for organisation name + auth method (interactive Entra / azcli / pat / envvar).
@@ -234,7 +231,7 @@ _PRIVATE_HOST_RE = re.compile(r"^(127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-
 def is_atlassian_cloud_url(url):
     """Cloud (Basic: email + API token) vs Server/DC (Bearer: PAT) branches on this.
 
-    Must agree with vendor/mcp-atlassian's utils/urls.py @ d8bc786 — if this says
+    Must agree with vendor/mcp-atlassian's utils/urls.py @ 4e2b836 — if this says
     DC where the vendor says Cloud, setup collects a PAT the server will never
     use and GH-17 reproduces. Suffix match (not `in`) so
     evil-atlassian.net.attacker.com stays DC.
@@ -282,7 +279,7 @@ SERVICES = {
         "apps": {
             "gmail": {
                 "service_name": "Gmail",
-                "package": "@gongrzhe/server-gmail-autoauth-mcp",
+                "package": "@gongrzhe/server-gmail-autoauth-mcp@1.1.11",
                 "keys_env": "GMAIL_OAUTH_PATH",  # → gcp-oauth.keys.json
                 "token_env": "GMAIL_CREDENTIALS_PATH",  # → token file it writes
                 "token_file": "credentials.json",
@@ -301,7 +298,7 @@ SERVICES = {
             "drive": {
                 "service_name": "GoogleDrive",
                 # Also exposes Docs/Sheets/Slides/Calendar tools (120+ Workspace tools).
-                "package": "@piotr-agier/google-drive-mcp",
+                "package": "@piotr-agier/google-drive-mcp@2.13.0",
                 "keys_env": "GOOGLE_DRIVE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_DRIVE_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -327,7 +324,7 @@ SERVICES = {
             },
             "calendar": {
                 "service_name": "GoogleCalendar",
-                "package": "@cocal/google-calendar-mcp",
+                "package": "@cocal/google-calendar-mcp@2.8.1",
                 "keys_env": "GOOGLE_OAUTH_CREDENTIALS",
                 "token_env": "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
                 "token_file": "tokens.json",
@@ -351,7 +348,7 @@ SERVICES = {
         "label": "Atlassian (Jira + Confluence, Cloud or Data Center)",
         "short": "Atlassian",
         "service_name": "Atlassian",
-        "package": "mcp-atlassian",
+        "package": "mcp-atlassian@0.21.1",
         "title_source_env": "JIRA_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "pat_howto": (
@@ -374,7 +371,7 @@ SERVICES = {
             "id.atlassian.com); Data Center authenticates with a Bearer Personal\n"
             "Access Token. The two credential kinds are NOT interchangeable — this\n"
             "tool detects which applies from the URL and only asks for that pair.\n"
-            "Source pin: vendor/mcp-atlassian @ d8bc786\n"
+            "Source pin: vendor/mcp-atlassian @ 4e2b836 (v0.21.1)\n"
             "  src/mcp_atlassian/utils/urls.py:49        (is_atlassian_cloud_url)\n"
             "  src/mcp_atlassian/jira/config.py:257-300  (Cloud → JIRA_USERNAME + JIRA_API_TOKEN; DC → JIRA_PERSONAL_TOKEN)\n"
             "  src/mcp_atlassian/confluence/config.py:104 (CONFLUENCE_PERSONAL_TOKEN read)"
@@ -453,74 +450,6 @@ SERVICES = {
             "applies_if": {"env": "JIRA_URL", "cloud": True},
         },
     },
-    # ── LinkedIn (cookie_paste) — local vendor under vendor/linkedin-mcp ──
-    "linkedin": {
-        "provider": "linkedin",
-        "launcher": "uv_local",
-        "auth_kind": "cookie_paste",
-        "label": "LinkedIn",
-        "short": "LinkedIn",
-        "service_name": "LinkedIn",
-        "local_pkg_dir": "vendor/linkedin-mcp",
-        "local_pkg_console_script": "linkedin-mcp",
-        "scopes_note": (
-            "Cookie-based access against LinkedIn's Voyager mobile API.\n"
-            "Cookies needed: li_at (session cookie, ~120 chars) and JSESSIONID\n"
-            "(CSRF cookie, looks like 'ajax:NNNNNNNNNNNNNNNN'). Rotate every\n"
-            "~90 days or whenever you log out / change password.\n"
-            "Source pin: vendor/linkedin-mcp v0.1.0 (this toolkit)"
-        ),
-        "env_vars": [
-            {
-                "name": "LINKEDIN_LI_AT",
-                "required": True,
-                "validator": "li_at",
-                "description": (
-                    "li_at cookie value. In Chrome: F12 → Application → Cookies → "
-                    "https://www.linkedin.com → li_at → Value. Paste the value only, "
-                    "no surrounding quotes."
-                ),
-                "secret": True,
-            },
-            {
-                "name": "LINKEDIN_JSESSIONID",
-                "required": True,
-                "validator": "jsessionid",
-                "description": (
-                    "JSESSIONID cookie value. Same place in DevTools. Typically "
-                    "looks like 'ajax:NNNNNNNNNNNNNNNN'. Paste without surrounding quotes."
-                ),
-                "secret": True,
-            },
-            {
-                "name": "LINKEDIN_ACCOUNT_LABEL",
-                "required": False,
-                "validator": "nonempty_or_empty",
-                "description": (
-                    "Free-text label that appears in server logs (e.g. 'minaalfy'). "
-                    "Defaults to the title slug if blank."
-                ),
-            },
-            {
-                "name": "LINKEDIN_TIMEZONE",
-                "required": False,
-                "validator": "nonempty_or_empty",
-                "description": ("IANA timezone used by throttle/working-hours gate (default: Europe/Berlin)."),
-            },
-            {
-                "name": "LINKEDIN_WORKING_HOURS_START",
-                "required": False,
-                "validator": "int_or_empty",
-                "description": "Hour (0-23) engagement actions become allowed (default: 9).",
-            },
-            {
-                "name": "LINKEDIN_WORKING_HOURS_END",
-                "required": False,
-                "validator": "int_or_empty",
-                "description": "Hour (0-23) engagement actions become blocked (default: 19).",
-            },
-        ],
-    },
     # ── Azure DevOps (Microsoft official) via @azure-devops/mcp (entra_login) ──
     "azure-devops": {
         "provider": "azure-devops",
@@ -529,7 +458,7 @@ SERVICES = {
         "label": "Azure DevOps (Microsoft official)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@azure-devops/mcp",
+        "npx_package": "@azure-devops/mcp@2.7.0",
         "scopes_note": (
             "Auth options exposed by @azure-devops/mcp:\n"
             "  • interactive (default) — opens an Entra browser flow on first tool call\n"
@@ -537,7 +466,7 @@ SERVICES = {
             "  • pat                    — reads PERSONAL_ACCESS_TOKEN env (base64 'email:token')\n"
             "  • envvar                 — reads ADO_MCP_AUTH_TOKEN env (raw bearer token)\n"
             "  • env                    — Azure SDK env-credential chain (advanced)\n"
-            "Source pin: vendor/azure-devops-mcp @ 1cd5d89 (v2.7.0 + 34 commits)\n"
+            "Source pin: vendor/azure-devops-mcp @ 70e94c6 (v2.7.0)\n"
             "  src/index.ts:32-39    (organisation positional arg)\n"
             "  src/index.ts:39-45    (--domains, default 'all')\n"
             "  src/index.ts:46-52    (--authentication choices)\n"
@@ -555,7 +484,7 @@ SERVICES = {
         "label": "Azure DevOps (Tiberriver256 — PAT fallback)",
         "short": "AzureDevOps",
         "service_name": "AzureDevOps",
-        "npx_package": "@tiberriver256/mcp-server-azure-devops",
+        "npx_package": "@tiberriver256/mcp-server-azure-devops@0.1.45",
         "title_source_env": "AZURE_DEVOPS_ORG_URL",
         "title_source_kind": "ado_org_from_url",
         "pat_setup_url": "https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate",
@@ -603,7 +532,7 @@ SERVICES = {
         "label": "Tempo (Jira time tracking, Data Center)",
         "short": "Tempo",
         "service_name": "Tempo",
-        "npx_package": "@tranzact/tempo-filler-mcp-server",
+        "npx_package": "@tranzact/tempo-filler-mcp-server@2.0.2",
         "title_source_env": "TEMPO_BASE_URL",
         "pat_setup_url": "https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html",
         "scopes_note": (
@@ -686,7 +615,7 @@ SERVICES = {
         "label": "GitLab (zereight/gitlab-mcp)",
         "short": "GitLab",
         "service_name": "GitLab",
-        "npx_package": "@zereight/mcp-gitlab",
+        "npx_package": "@zereight/mcp-gitlab@2.1.18",
         "title_source_env": "GITLAB_API_URL",
         "pat_setup_url": "https://docs.gitlab.com/user/profile/personal_access_tokens/",
         "pat_howto": (
@@ -847,32 +776,12 @@ def _v_int_or_empty(value):
     return (value.isdigit(), "expected an integer (or leave blank)")
 
 
-def _v_li_at(value):
-    v = value.strip().strip('"').strip("'")
-    if len(v) < 80:
-        return False, "li_at cookies are usually ~120+ characters; this looks too short"
-    if " " in v or "\n" in v:
-        return False, "li_at cannot contain spaces or newlines — paste the value only"
-    return True, None
-
-
-def _v_jsessionid(value):
-    v = value.strip().strip('"').strip("'")
-    if not v.startswith("ajax:"):
-        return False, "JSESSIONID usually starts with 'ajax:' — make sure you copied the whole value"
-    if " " in v:
-        return False, "JSESSIONID cannot contain spaces"
-    return True, None
-
-
 VALIDATORS = {
     "url": _v_url,
     "url_or_empty": _v_url_or_empty,
     "nonempty": _v_nonempty,
     "nonempty_or_empty": _v_nonempty_or_empty,
     "int_or_empty": _v_int_or_empty,
-    "li_at": _v_li_at,
-    "jsessionid": _v_jsessionid,
 }
 
 
@@ -1022,7 +931,7 @@ def _mcp_handshake_test(
     except Exception as e:
         return False, f"failed to spawn server: {e}", 0
 
-    _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE|LI_AT|JSESSIONID", re.I)
+    _SECRET_KEY = re.compile(r"TOKEN|SECRET|PASSWORD|_PAT$|COOKIE", re.I)
     _raw = [v for k, v in env_pairs.items() if isinstance(v, str) and len(v) >= 8 and _SECRET_KEY.search(k)]
     # Basic auth puts base64(user:token) on the wire, so the token never appears
     # verbatim for a Cloud server to echo — redact the encoded forms too.
@@ -1523,10 +1432,16 @@ def _print_google_cloud_prep(s, add_keys, first_run):
             print(f"        • {name}: https://console.cloud.google.com/apis/library/{api_id}")
         print(f"""
   2c. Configure the OAuth consent screen ({s["consent_url"]}):
-        • User Type: External · add your Google account as a Test User
-        • ⚠ While in "Testing", Google EXPIRES refresh tokens after ~7 days — so the
-          servers would need re-auth weekly. PUBLISH the app (Testing → Production)
-          to make tokens durable.
+        • Best for one person: on a NEW project, pick User Type "Personal". It only
+          works for your own Google account, needs no verification, and its tokens
+          don't expire after 7 days. It can't be changed later.
+        • Otherwise User Type "External", and add your Google account as a Test User.
+          ⚠ While the app is "Testing", Google EXPIRES its refresh tokens 7 days after
+          consent, and the servers stop working. PUBLISH it (Testing → In production)
+          to keep tokens. Unverified, Google shows an "unverified app" screen at
+          consent (click through it), and allows 100 users in the project's lifetime.
+        • "Internal" also avoids the expiry, but only for a project in a Google Cloud
+          organisation (Workspace or Cloud Identity), not a personal gmail.com account.
       Add these scopes ("Scopes for Google APIs") — what the local servers request:""")
         for sc in scopes:
             print(f"        {sc}")
@@ -1657,6 +1572,23 @@ def _port_busy(port):
         return sk.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _port_holder(port):
+    """Name the process listening on `port` (via lsof), or a placeholder."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fpc"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "an unknown process"
+    pid = next((ln[1:] for ln in out.splitlines() if ln.startswith("p")), None)
+    cmd = next((ln[1:] for ln in out.splitlines() if ln.startswith("c")), None)
+    return f"{cmd} (pid {pid})" if pid and cmd else "an unknown process"
+
+
 def _warn_runtime_env_footguns():
     """Warn about ambient env vars that make the Drive/Calendar servers IGNORE their
     token files at RUNTIME. `claude mcp add --env` can only ADD vars to the spawned
@@ -1685,12 +1617,17 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
 
     None of the three servers auto-auth on normal MCP start (Drive's first tool call
     would hang), so this explicit browser step is mandatory before registration."""
-    busy = [p for p in app.get("auth_ports", []) if _port_busy(p)]
+    ports = app.get("auth_ports", [])
+    busy = [p for p in ports if _port_busy(p)]
+    free = [p for p in ports if p not in busy]
+    for p in busy:
+        print(f"  ⚠ loopback port {p} is in use by {_port_holder(p)}.")
+    if ports and not free:
+        print(f"  ✗ {app['service_name']} consent needs one of {ports} free for Google's")
+        print("    redirect. Stop that process and re-run setup.")
+        return False
     if busy:
-        print(f"  ⚠ loopback port(s) {busy} are in use — the OAuth callback needs one")
-        print(f"    of {app['auth_ports']} free (e.g. a running Drive MCP squats :3000).")
-        if not confirm("Continue anyway?", default=True):
-            return False
+        print(f"  ⓘ {app['service_name']} will use port {free[0]} for the consent callback.")
     env = os.environ.copy()
     # Strip auth-mode footguns: with these set the Drive server IGNORES tokens.json,
     # and GOOGLE_ACCOUNT_MODE would file Calendar tokens under a non-'normal' key.
@@ -1723,6 +1660,22 @@ def _run_google_app_auth(app, keys_path, token_path, cwd, shim):
         pass
     print(f"  ✓ {app['service_name']} authorized.")
     return True
+
+
+def _is_testing_mode_token(token_path):
+    """Google adds refresh_token_expires_in only to grants from a project in Testing."""
+    try:
+        data = json.loads(Path(token_path).read_text())
+    except (OSError, ValueError):
+        return False
+    stack = [data]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if "refresh_token_expires_in" in node:
+                return True
+            stack.extend(node.values())
+    return False
 
 
 def _google_rotate_secret(service_key, s, state):
@@ -1909,8 +1862,13 @@ def _setup_local_oauth(service_key, s, args=None):
             or confirm(f"  {app['service_name']}: a token file already exists — keep it (skip browser)?", default=True)
         )
         if not reuse and not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
-            print(f"  ⚠ skipping {app['service_name']} — not authorized.")
+            shutil.rmtree(app_dir, ignore_errors=True)
+            print(f"  ⚠ skipping {app['service_name']} — not authorized (its client keys were deleted).")
             continue
+        if reuse and _is_testing_mode_token(token_path):
+            print(f"  ⚠ {app['service_name']}: this is a Testing-mode token — Google revokes it")
+            print("    7 days after consent. Publish the consent screen to production, delete")
+            print(f"    {token_path.name}, and re-run setup to consent again.")
 
         env_pairs = {app["keys_env"]: str(keys_path), app["token_env"]: str(token_path)}
         if shim:
@@ -2109,171 +2067,6 @@ def _setup_api_token(service_key, s):
     print(f"    State:  {final_dir}")
     print("    Rotate the PAT later by re-running this command with the same title.")
     print("    Run `claude mcp list` to confirm and restart your session.")
-    hr("═")
-    return 0
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Setup — cookie_paste branch (LinkedIn)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _setup_cookie_paste(service_key, s):
-    local_dir = (REPO_ROOT / s["local_pkg_dir"]).resolve()
-    if not local_dir.exists():
-        print(f"  ✗ Local package directory not found: {local_dir}")
-        return 1
-
-    step(1, f"Grab your LinkedIn session cookies for {s['label']}")
-    print("""
-  Open LinkedIn in your browser and sign in normally (with 2FA if you use it).
-  Then extract two cookies via DevTools:
-
-    Chrome / Edge:
-      1. Press F12 (DevTools)
-      2. Application tab → Storage → Cookies → https://www.linkedin.com
-      3. Copy the 'Value' column for these two rows:
-           • li_at          (long random string, ~120+ chars)
-           • JSESSIONID     (looks like 'ajax:1234567890123456')
-      4. Paste each value at the prompts below.
-
-    Firefox:
-      1. Press F12 → Storage tab → Cookies → https://www.linkedin.com
-      2. Copy 'Value' for li_at and JSESSIONID.
-
-  Notes:
-   - Paste the VALUE only, no surrounding quotes.
-   - Cookies last ~90 days unless you log out / change password.
-   - If you ever rotate, re-run this script with the same title to update.
-   - Treat li_at like a password — anyone with it can post as you.
-
-  ⚠ Account-safety reminder: this MCP throttles itself (daily caps + working
-     hours), but unofficial API use against LinkedIn can still get an account
-     restricted. With your eAT job-hunt active, don't run engagement actions
-     in bulk — the read tools (jobs, profiles, feed, inbox) are much safer.
-""")
-    input("  Press Enter once you have both cookies ready… ")
-
-    step(2, "Enter the cookies + optional config")
-    values = {}
-    for spec in s["env_vars"]:
-        name = spec["name"]
-        required = spec.get("required", False)
-        validator = VALIDATORS.get(spec.get("validator", "nonempty"))
-        marker = "" if required else "  (optional, leave blank for default)"
-        print(f"\n  {name}{marker}")
-        print(f"    {spec['description']}")
-        v = prompt(
-            name,
-            validator=validator,
-            allow_empty=not required,
-            secret=spec.get("secret", False),
-        )
-        values[name] = (v or "").strip().strip('"').strip("'")
-
-    # Stage state dir with a pending slug
-    tmp_slug = "_pending"
-    state_dir = make_state_dir(service_key, tmp_slug)
-    env_path = state_dir / "env"
-    write_env_file(env_path, values)
-    print(f"\n  ✓ env file staged at {env_path} (mode 600)")
-
-    step(3, "Connection test — call get_user_profile() with the pasted cookies")
-    ping_env = os.environ.copy()
-    ping_env.update({k: v for k, v in values.items() if v})
-    ping_env["LINKEDIN_STATE_DIR"] = str(state_dir)
-    ping_cmd = ["uv", "run", "--directory", str(local_dir), "python", "-m", "linkedin_mcp.ping"]
-    try:
-        result = subprocess.run(ping_cmd, env=ping_env, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        print("  ✗ Ping timed out after 120s. Check your network + cookie values.")
-        return 1
-    except FileNotFoundError:
-        print("  ✗ `uv` not found on PATH. Install uv (https://docs.astral.sh/uv/) and re-run.")
-        return 1
-    if result.returncode != 0:
-        print(f"  ✗ Ping failed (exit {result.returncode}).")
-        if result.stderr.strip():
-            print("    stderr:")
-            for line in result.stderr.strip().splitlines():
-                print(f"      {line}")
-        if "AUTH-FAILED" in (result.stderr or ""):
-            print("    → li_at is invalid / expired. Re-copy from DevTools and retry.")
-        return 1
-    try:
-        identity = json.loads(result.stdout.strip())
-    except json.JSONDecodeError:
-        print(f"  ⚠ ping returned non-JSON: {result.stdout!r}")
-        identity = {}
-    name = " ".join(filter(None, [identity.get("first_name"), identity.get("last_name")])) or "(unknown)"
-    print(f"  ✓ Connected as: {name}")
-    if identity.get("headline"):
-        print(f"    Headline: {identity['headline']}")
-
-    step(4, "Pick a title for this MCP server in Claude Code")
-    print("  Note: claude mcp names accept letters, numbers, hyphens, and underscores only.")
-    default_label = values.get("LINKEDIN_ACCOUNT_LABEL") or slugify(name) or "linkedin"
-    default_title = f"{default_label}-{s['service_name']}"
-    title = prompt("Title", default=default_title, validator=validate_mcp_name)
-
-    final_slug = slugify(title)
-    final_dir = STATE_ROOT / service_key / final_slug
-    replacing = final_dir.exists() and final_dir != state_dir
-    if replacing:
-        print(f"  ⓘ State dir already exists for slug '{final_slug}': {final_dir}")
-        if not confirm("Replace existing state with the freshly entered cookie?", default=True):
-            print("     Pick a different title or remove the existing state dir first.")
-            return 1
-        shutil.rmtree(final_dir)
-        print("  ✓ removed old state dir")
-    if final_dir != state_dir:
-        state_dir.rename(final_dir)
-        env_path = final_dir / "env"
-        print(f"  ✓ state moved to {final_dir}")
-
-    # The server needs LINKEDIN_STATE_DIR pointing at its final dir so the
-    # throttle counter file + playwright profile dir resolve correctly.
-    if not values.get("LINKEDIN_ACCOUNT_LABEL"):
-        values["LINKEDIN_ACCOUNT_LABEL"] = default_label
-    env_pairs = dict(values)
-    env_pairs["LINKEDIN_STATE_DIR"] = str(final_dir)
-
-    if replacing:
-        subprocess.run(
-            claude_cmd("mcp", "remove", "--scope", "user", title),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-    ok = claude_mcp_add(
-        title=title,
-        launcher=s["launcher"],
-        package=s["local_pkg_dir"],
-        env_pairs=env_pairs,
-        local_dir=local_dir,
-        console_script=s.get("local_pkg_console_script"),
-    )
-    if not ok:
-        return 1
-
-    if not _finalize_with_handshake(
-        title=title,
-        final_dir=final_dir,
-        launcher=s["launcher"],
-        package=s["local_pkg_dir"],
-        env_pairs=env_pairs,
-        local_dir=local_dir,
-        console_script=s.get("local_pkg_console_script"),
-        step_num=6,
-        declared_env=[spec["name"] for spec in s.get("env_vars", [])],
-    ):
-        return 1
-
-    hr("═")
-    print(f"  ✓ Done. '{title}' is registered and verified.")
-    print(f"    State:  {final_dir}")
-    print("    Restart your Claude Code session to load tools.")
-    print("    Rotate cookies later by re-running this command with the same title.")
     hr("═")
     return 0
 
@@ -2945,8 +2738,6 @@ def cmd_setup(service_key, args=None):
         return _setup_local_oauth(service_key, s, args)
     if s["auth_kind"] == "api_token":
         return _setup_api_token(service_key, s)
-    if s["auth_kind"] == "cookie_paste":
-        return _setup_cookie_paste(service_key, s)
     if s["auth_kind"] == "entra_login":
         return _setup_entra_login(service_key, s)
     if s["auth_kind"] == "remote_http":
@@ -2993,7 +2784,7 @@ def cmd_doctor():
 def main():
     ap = argparse.ArgumentParser(
         prog="setup-mcp.py",
-        description="Set up MCP servers (Google, Atlassian, Tempo, LinkedIn, Azure DevOps, GitHub, GitLab) for Claude Code.",
+        description="Set up MCP servers (Google, Atlassian, Tempo, Azure DevOps, GitHub, GitLab) for Claude Code.",
     )
     sub = ap.add_subparsers(dest="service", required=True)
     for key, cfg in SERVICES.items():
@@ -3015,7 +2806,6 @@ def main():
                 "or 'none' to remove every app from the account.",
             )
     sub.add_parser("doctor", help="List registered servers and their local state.")
-    # alias: `linkedin` works as a positional even though the dict key matches.
     args = ap.parse_args()
     if args.service == "doctor":
         return cmd_doctor()

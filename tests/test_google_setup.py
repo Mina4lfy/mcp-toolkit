@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import subprocess
 import tempfile
 import unittest
@@ -98,7 +99,58 @@ class RerunRepairsRegistrations(GoogleSetupCase):
         self.register(ALL_APPS)
         (self.state_root / "google" / HANDLE / "drive" / "tokens.json").unlink()
         self.run_setup(apps="gmail,drive,calendar")
-        self.assertEqual([c[2] for c in self.auth_runs()], ["@piotr-agier/google-drive-mcp"])
+        self.assertEqual([c[2] for c in self.auth_runs()], [self.service["apps"]["drive"]["package"]])
+
+
+class ConsentPorts(GoogleSetupCase):
+    def run_auth(self, app_key, busy, out):
+        app = self.service["apps"][app_key]
+        d = self.state_root / app_key
+        d.mkdir()
+        self._patch(setup_mcp, "_port_busy", lambda port: port in busy)
+        self._patch(setup_mcp, "_port_holder", lambda port: "node (pid 42)")
+        with mock.patch("sys.stdout", out):
+            return setup_mcp._run_google_app_auth(app, d / "gcp-oauth.keys.json", d / app["token_file"], d, None)
+
+    def npx_calls(self):
+        return [c for c in self.claude_calls if c[0] == "npx"]
+
+    def test_gmail_consent_is_refused_when_its_only_port_is_busy(self):
+        out = io.StringIO()
+        self.assertFalse(self.run_auth("gmail", {3000}, out))
+        self.assertEqual(self.npx_calls(), [])
+        self.assertIn("node (pid 42)", out.getvalue())
+
+    def test_drive_reports_the_port_it_falls_through_to(self):
+        out = io.StringIO()
+        self.run_auth("drive", {3000}, out)
+        self.assertEqual(len(self.npx_calls()), 1)
+        self.assertIn("port 3001", out.getvalue())
+
+    def test_failed_consent_leaves_no_keys_file(self):
+        self._patch(setup_mcp, "_run_google_app_auth", lambda *a: False)
+        self.register(["drive", "calendar"])
+        self.run_setup(apps="gmail,drive,calendar", inputs=[""])
+        self.assertFalse((self.state_root / "google" / HANDLE / "gmail").exists())
+
+
+class TestingModeTokens(GoogleSetupCase):
+    def rerun(self, token_body):
+        self.register(["calendar"])
+        tok = self.state_root / "google" / HANDLE / "calendar" / "tokens.json"
+        tok.write_text(token_body)
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            self.run_setup(apps="calendar")
+        return out.getvalue()
+
+    def test_reused_testing_mode_token_is_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "refresh_token_expires_in": 604799}}')
+        self.assertIn("Testing-mode token", out)
+
+    def test_production_token_is_not_flagged(self):
+        out = self.rerun('{"normal": {"refresh_token": "x", "expiry_date": 1}}')
+        self.assertNotIn("Testing-mode token", out)
 
 
 if __name__ == "__main__":

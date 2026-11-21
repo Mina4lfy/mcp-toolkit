@@ -1,17 +1,16 @@
 # mcp-toolkit
 
-Plug-and-play setup for MCP servers inside Claude Code, across seven providers: Google (Gmail / Drive / Calendar, via **local stdio community servers** behind one Desktop OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), LinkedIn (jobs / profiles / messaging / engagement / posts), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (GitHub is provider-hosted and Google runs community packages via npx, so neither has a submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
+Plug-and-play setup for MCP servers inside Claude Code, across six providers: Google (Gmail / Drive / Calendar, via **local stdio community servers** behind one Desktop OAuth client), Atlassian (Jira + Confluence Data Center), Tempo (Jira time-tracking), Azure DevOps (boards / repos / pipelines / wikis / search), GitHub (repos / issues / PRs / Actions / code search, via GitHub's official hosted remote server), and GitLab (projects / issues / merge requests / repo / pipelines, SaaS or self-hosted). One Python entry script, per-service wrappers under `bin/`, vendored MCP-server repos as git submodules under `vendor/` (GitHub is provider-hosted and Google runs community packages via npx, so neither has a submodule). All credentials + token caches stay under `./state/` (gitignored) so the toolkit can travel with you between machines without leaking secrets.
 
 ## What this gives you
 
-Claude Code MCP servers across seven providers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example a `minaalfykamel-Gmail` and a `minaalfy8-Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry). Google contributes one server per selected app (Gmail / Drive / Calendar) sharing a single OAuth client; the other providers are one server each.
+Claude Code MCP servers across six providers — each titled after the account or host that owns it, so you can have multiple accounts registered side-by-side (for example a `minaalfykamel-Gmail` and a `minaalfy8-Gmail` can co-exist, or two Jira instances each with their own Atlassian/Tempo entry). Google contributes one server per selected app (Gmail / Drive / Calendar) sharing a single OAuth client; the other providers are one server each.
 
 | Service | Vendor (cloned in `vendor/`) | Launcher | Auth | Default scopes / env |
 | --- | --- | --- | --- | --- |
 | Google Workspace (Gmail / Drive / Calendar) | Local stdio community servers (`@gongrzhe/server-gmail-autoauth-mcp`, `@piotr-agier/google-drive-mcp`, `@cocal/google-calendar-mcp`) via npx | stdio | OAuth 2.0 (one Desktop client per account, per-app browser consent) | Gmail: `gmail.modify`, `gmail.settings.basic` · Drive: `drive`, `drive.file`, `docs`, `sheets`, `slides` · Calendar: `calendar` |
 | Atlassian (Jira + Confluence DC) | [`sooperset/mcp-atlassian`](https://github.com/sooperset/mcp-atlassian) | uvx | Jira DC PAT | `JIRA_URL`, `JIRA_PERSONAL_TOKEN`; `CONFLUENCE_URL` + `CONFLUENCE_PERSONAL_TOKEN` (leave blank to derive from Jira — `JIRA_URL` + `/wiki` and the same PAT) |
 | Tempo (Jira time tracking) | [`tranzact/tempo-filler-mcp-server`](https://github.com/tranzact/tempo-filler-mcp-server) | npx | Jira DC PAT | `TEMPO_BASE_URL`, `TEMPO_PAT`, optional `TEMPO_DEFAULT_HOURS` |
-| LinkedIn | `vendor/linkedin-mcp/` (this toolkit) | uv (local source) | Cookie paste | `LINKEDIN_LI_AT`, `LINKEDIN_JSESSIONID`, optional timezone + working-hours |
 | Azure DevOps (Microsoft official) | [`microsoft/azure-devops-mcp`](https://github.com/microsoft/azure-devops-mcp) | npx | PAT (default, validated at setup) / `az login` / Entra browser | positional `<organization>`, flags `--authentication`, `-d`, `--tenant`; PAT modes set `PERSONAL_ACCESS_TOKEN` or `ADO_MCP_AUTH_TOKEN` |
 | Azure DevOps (PAT fallback) | [`Tiberriver256/mcp-server-azure-devops`](https://github.com/Tiberriver256/mcp-server-azure-devops) | npx | Azure DevOps PAT | `AZURE_DEVOPS_ORG_URL`, `AZURE_DEVOPS_AUTH_METHOD`, `AZURE_DEVOPS_PAT`, optional `AZURE_DEVOPS_DEFAULT_PROJECT` |
 | GitHub (official remote) | [`github/github-mcp-server`](https://github.com/github/github-mcp-server) (GitHub-hosted, no local install) | HTTP transport | GitHub PAT | endpoint `https://api.githubcopilot.com/mcp/`, header `Authorization: Bearer <PAT>` |
@@ -48,11 +47,7 @@ Claude Code MCP servers across seven providers — each titled after the account
 ./bin/setup-gitlab.sh                     # GitLab via zereight/gitlab-mcp (PAT, SaaS or self-hosted)
 ```
 
-The script branches on auth flavour. The Google entry follows `local_oauth` (local stdio servers + one Desktop OAuth client, per-app browser consent); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the LinkedIn entry follows `cookie_paste`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
-
-```bash
-./bin/setup-linkedin.sh     # LinkedIn (Voyager API + Playwright)
-```
+The script branches on auth flavour. The Google entry follows `local_oauth` (local stdio servers + one Desktop OAuth client, per-app browser consent); the Atlassian + Tempo + Tiberriver256 + GitLab entries follow `api_token`; the Microsoft Azure DevOps entry follows `entra_login`; the GitHub entry follows `remote_http`.
 
 ### Google Workspace — `local_oauth` flow (local stdio servers, one Desktop OAuth client)
 
@@ -82,37 +77,6 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 - **OAuth callback port busy** (`:3000` Gmail/Drive, `:3500-3505` Calendar) → free it before authorizing (a running Drive MCP squats `:3000`).
 - **Gmail search errors "Metadata scope does not support 'q'"** → shouldn't occur on this flow (Gmail requests only `gmail.modify` + `gmail.settings.basic`); if it does, re-authorize Gmail.
 - **Tokens stop working after ~a week** → the consent screen is still in Testing mode; publish it to Production.
-
-### LinkedIn — `cookie_paste` flow
-
-LinkedIn has no broadly-accessible official API. This toolkit's LinkedIn server uses cookie-based access against the Voyager mobile API (`linkedin-api` Python lib) plus a Playwright-driven browser session for post creation. **This violates LinkedIn's User Agreement §8.2** (no automated access outside their Marketing/Talent Developer Platform); enforcement is account-level (restriction / ban), not legal. The toolkit ships hard caps + working-hours gates + human-shaped random delays on every write tool, but you accept account-risk by using it.
-
-1. **Get the cookies** — log into LinkedIn in your browser normally (with 2FA). Open DevTools → Application/Storage → Cookies → `https://www.linkedin.com`. Copy the Value column for `li_at` (~120-char session cookie) and `JSESSIONID` (looks like `ajax:1234567890123456`).
-2. **Cookie + config prompts** — script asks for the two cookie values (read with `getpass`, no echo), optional account label, optional timezone (default `Europe/Berlin`), optional working-hours window (default 09-19).
-3. **Connection test** — script subprocess-runs `python -m linkedin_mcp.ping` with the staged env, which calls `get_user_profile()` on Voyager. Prints `Connected as: <your-name>` on success or `AUTH-FAILED` with the actual error.
-4. **Title prompt** — defaults to `<account-label-or-name-slug>-LinkedIn`.
-5. **Claude Code registration** — `claude mcp add --scope user "<title>" --env LINKEDIN_LI_AT=*** … -- uv run --directory vendor/linkedin-mcp linkedin-mcp`. The registration command's env values are redacted to `KEY=***` so the cookies never appear in logs.
-
-Cookies last ~90 days unless you log out / change password. Re-run `./bin/setup-linkedin.sh` with the same title to rotate.
-
-**Tool surface** (Phase 1 reads + Phase 2 writes):
-
-| Tool | Class | Cap | Notes |
-| --- | --- | --- | --- |
-| `search_jobs` | search | 200/day | Keywords + location + remote + experience + job-type filters |
-| `get_job` | read | 200/day | Full JD for a numeric job_id |
-| `get_recommended_jobs` | search | 200/day | Algorithm-driven feed (highest signal) |
-| `get_profile` | read | 200/day | By public_id (the `/in/<slug>` part of a profile URL) |
-| `search_people` | search | 200/day | People search with geo / company / school filters |
-| `get_feed` | read | 200/day | Recent posts from home feed |
-| `get_inbox` | read | 200/day | Recent DM conversations |
-| `send_connection_request` | connection_request | 20/day, 5/hr, work-hrs | 300-char optional note; LinkedIn weekly cap ~100 |
-| `send_message` | message | 40/day, 10/hr, work-hrs | Reply to thread or open new (1st-degree only without InMail) |
-| `react_to_post` | react | 50/day, 15/hr, work-hrs | like / praise / empathy / interest / appreciation / entertainment |
-| `comment_on_post` | comment | 10/day, 3/hr, work-hrs | Bot-detection most sensitive here — keep comments unique |
-| `create_post` | post | 3/day, 1/hr | Text-only via Playwright; images/video do manually |
-| `linkedin_whoami` | — | unbounded | Identity ping; use if other tools start failing |
-| `linkedin_throttle_status` | — | unbounded | Inspect cap usage live |
 
 ### Atlassian + Tempo — `api_token` flow
 
@@ -206,19 +170,17 @@ mcp-toolkit/
 │  ├─ setup-google.sh               # Google Workspace (local stdio community servers via npx) — pick apps, one Desktop OAuth client
 │  ├─ setup-atlassian.sh
 │  ├─ setup-tempo.sh
-│  ├─ setup-linkedin.sh
 │  ├─ setup-azure-devops.sh
 │  ├─ setup-azure-devops-tiberriver.sh
 │  ├─ setup-github.sh               # GitHub official remote server (no submodule — hosted)
 │  └─ setup-gitlab.sh               # GitLab via zereight/gitlab-mcp (SaaS or self-hosted)
-├─ vendor/                          # upstream MCP servers (git submodules) + local linkedin-mcp
+├─ vendor/                          # upstream MCP servers (git submodules)
 │  │                                # (GitHub is provider-hosted; Google runs community pkgs via npx — no submodule either way)
 │  ├─ mcp-atlassian/                → sooperset/mcp-atlassian
 │  ├─ tempo-filler-mcp-server/      → tranzact/tempo-filler-mcp-server
 │  ├─ azure-devops-mcp/             → microsoft/azure-devops-mcp
 │  ├─ azure-devops-mcp-tiberriver/  → Tiberriver256/mcp-server-azure-devops
-│  ├─ gitlab-mcp/                   → zereight/gitlab-mcp (pinned v2.1.18)
-│  └─ linkedin-mcp/                 → local Python pkg in this toolkit (FastMCP + linkedin-api + Playwright)
+│  └─ gitlab-mcp/                   → zereight/gitlab-mcp (pinned v2.1.18)
 └─ state/                           # credentials + token caches per `<service>/<slug>` — gitignored
 ```
 
@@ -248,7 +210,7 @@ For most services, each has its own community-maintained MCP server with deep co
 
 ## Adding another service later
 
-Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `cookie_paste` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
+Edit `setup-mcp.py` and add an entry to the `SERVICES` dict — set `provider`, `launcher` (`npx` / `uvx` / `uv_local` / `remote_http`), `auth_kind` (`local_oauth` / `api_token` / `entra_login` / `remote_http`), and the per-flavour fields the existing entries demonstrate. For a locally-run server, vendor the upstream repo as a git submodule under `vendor/` (or, like Google's `npx` community packages, rely on npx resolving them — no submodule). Add a thin `bin/setup-<name>.sh` wrapper, and you're done. (To add more Google apps — Chat, People — just add entries to `SERVICES["google"]["apps"]`; the flow picks them up automatically.)
 
 ## Anti-fabrication note
 

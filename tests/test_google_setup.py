@@ -6,8 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-_SPEC = importlib.util.spec_from_file_location(
-    "setup_mcp", Path(__file__).resolve().parent.parent / "setup-mcp.py")
+_SPEC = importlib.util.spec_from_file_location("setup_mcp", Path(__file__).resolve().parent.parent / "setup-mcp.py")
 setup_mcp = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(setup_mcp)
 
@@ -44,8 +43,7 @@ class GoogleSetupCase(unittest.TestCase):
             d.mkdir(parents=True)
             (d / "gcp-oauth.keys.json").write_text("{}")
             (d / self.service["apps"][app]["token_file"]).write_text("{}")
-        setup_mcp._save_google_state(
-            "google", HANDLE, "id.apps.googleusercontent.com", "GOCSPX-secret", "", apps)
+        setup_mcp._save_google_state("google", HANDLE, "id.apps.googleusercontent.com", "GOCSPX-secret", "", apps)
 
     def run_setup(self, apps=None, inputs=()):
         args = SimpleNamespace(client_secret=None, handle=HANDLE, apps=apps)
@@ -59,8 +57,9 @@ class GoogleSetupCase(unittest.TestCase):
 class RemoveEveryApp(GoogleSetupCase):
     def assert_all_removed(self, rc):
         self.assertEqual(rc, 0)
-        self.assertEqual(sorted(self.removed_titles()),
-                         sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
+        self.assertEqual(
+            sorted(self.removed_titles()), sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar"))
+        )
         self.assertEqual(setup_mcp._load_google_state("google", HANDLE)["apps"], [])
         for app in ALL_APPS:
             self.assertFalse((self.state_root / "google" / HANDLE / app).exists())
@@ -90,11 +89,9 @@ class RerunRepairsRegistrations(GoogleSetupCase):
         self.register(ALL_APPS)
         self.assertEqual(self.run_setup(apps="gmail,drive,calendar"), 0)
         added = self.added()
-        self.assertEqual(sorted(added), sorted(
-            f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
+        self.assertEqual(sorted(added), sorted(f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
         gmail_dir = self.state_root / "google" / HANDLE / "gmail"
-        self.assertIn(f"GMAIL_CREDENTIALS_PATH={gmail_dir / 'credentials.json'}",
-                      added[f"{HANDLE}-Gmail"])
+        self.assertIn(f"GMAIL_CREDENTIALS_PATH={gmail_dir / 'credentials.json'}", added[f"{HANDLE}-Gmail"])
         self.assertEqual(self.auth_runs(), [])
 
     def test_kept_app_without_a_token_is_authorized_again(self):

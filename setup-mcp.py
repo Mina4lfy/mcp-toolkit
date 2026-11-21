@@ -1228,7 +1228,7 @@ def _shellquote(s):
 # Setup — local_oauth branch (Google Workspace, LOCAL stdio community MCP servers)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def prompt_multiselect(question, options, preselected=None):
+def prompt_multiselect(question, options, preselected=None, allow_empty=False):
     """Toggle-style multiselect. `options` is a list of (key, label). Returns the
     selected keys in `options` order. Enter accepts the current selection."""
     keys = [k for k, _ in options]
@@ -1246,7 +1246,7 @@ def prompt_multiselect(question, options, preselected=None):
     while True:
         raw = input("  selection: ").strip().lower()
         if raw == "":
-            if not selected:
+            if not selected and not allow_empty:
                 print("    (nothing selected — pick at least one, or type 'all')")
                 continue
             return [k for k in keys if k in selected]
@@ -1723,7 +1723,10 @@ def _setup_local_oauth(service_key, s, args=None):
 
     # STEP 1 — choose apps (from --apps, or interactively)
     step(1, "Choose which Google apps you want")
-    if cli_apps:
+    if cli_apps and cli_apps.strip().lower() == "none":
+        desired = []
+        print("  Apps (from --apps): none — every registered app is removed.")
+    elif cli_apps:
         wanted = [a.strip() for a in cli_apps.split(",") if a.strip()]
         bad = [a for a in wanted if a not in apps]
         if bad:
@@ -1734,7 +1737,8 @@ def _setup_local_oauth(service_key, s, args=None):
     else:
         options = [(k, f"{apps[k]['service_name']}  ({apps[k]['package']})") for k in apps]
         desired = prompt_multiselect(
-            "Select the Google apps to enable:", options, preselected=registered)
+            "Select the Google apps to enable:", options, preselected=registered,
+            allow_empty=bool(registered))
     desired_set = set(desired)
     to_add = [k for k in apps if k in desired_set and k not in registered]
     to_remove = [k for k in apps if k in registered and k not in desired_set]
@@ -2880,7 +2884,8 @@ def main():
             p.add_argument("--handle", metavar="NAME",
                            help="Account handle to set up (e.g. minaalfykamel) without the menu.")
             p.add_argument("--apps", metavar="LIST",
-                           help="Comma-separated apps to enable (e.g. gmail,drive,calendar).")
+                           help="Comma-separated apps to enable (e.g. gmail,drive,calendar), "
+                                "or 'none' to remove every app from the account.")
     sub.add_parser("doctor", help="List registered servers and their local state.")
     # alias: `linkedin` works as a positional even though the dict key matches.
     args = ap.parse_args()

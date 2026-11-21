@@ -73,7 +73,7 @@ Each app is its own server with its own on-disk token, but they **share one Desk
 4. **Authorize + register (STEP 4)** — for each added app the setup runs the package's **`auth` subcommand**, which opens your browser for consent and writes the app's token into `state/google/<handle>/<app>/`, then registers the stdio server: `claude mcp add --scope user --env <KEYS_ENV>=… --env <TOKEN_ENV>=… -- npx -y <package>`. It also ensures the Node-24 `node-fetch`→undici preload shim and raises `MCP_TIMEOUT` in `~/.claude/settings.json` (the servers take ~10s to boot). Deselected apps are removed with `claude mcp remove` (their local token deleted too).
 5. **Restart** your Claude Code session to load the new tools.
 
-**Removing / rotating**: re-run and deselect an app to remove it (its stdio server + local token are dropped); when the selection is unchanged it offers to **rotate the client secret** (rewrites each `gcp-oauth.keys.json`).
+**Removing / rotating**: re-run and deselect an app to remove it (its stdio server + local token are dropped); deselect every app, or pass `--apps none`, to remove them all; when the selection is unchanged it offers to **rotate the client secret** (rewrites each `gcp-oauth.keys.json`).
 
 **Troubleshooting:**
 

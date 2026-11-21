@@ -1747,11 +1747,12 @@ def _setup_local_oauth(service_key, s, args=None):
     if not to_add and not to_remove:
         print("\n  Selection already matches what's registered — nothing to add/remove.")
         if state and not cli_secret and confirm("Rotate the OAuth client secret instead?", default=False):
-            return _google_rotate_secret(service_key, s, state)
-        print("  Done.  (To re-authorize an app, de-select then re-select it, or remove+add.)")
-        return 0
+            _google_rotate_secret(service_key, s, state)
+            state = _load_google_state(service_key, handle)
 
     print(f"\n  Plan:  add={to_add or '—'}   remove={to_remove or '—'}   keep={keep or '—'}")
+    if keep:
+        print("  Kept apps are registered again with the current paths (token reused).")
 
     # Resolve the shared Desktop OAuth client — reuse stored, or collect via
     # --client-secret / prompt.
@@ -1786,8 +1787,8 @@ def _setup_local_oauth(service_key, s, args=None):
 
     # Shared prep: ensure the Node-24 fetch shim + raise MCP_TIMEOUT for slow boots,
     # and warn about ambient env vars that would make the runtime servers ignore tokens.
-    shim = _ensure_undici_shim() if to_add else None
-    if to_add:
+    shim = _ensure_undici_shim() if to_add or keep else None
+    if to_add or keep:
         _ensure_mcp_timeout()
         _warn_runtime_env_footguns()
 
@@ -1797,19 +1798,19 @@ def _setup_local_oauth(service_key, s, args=None):
     # STEP 4 — per app: write keys → browser auth → register stdio server.
     step(4, "Authorize + register the selected app(s)")
     added_ok = []
-    for k in to_add:
+    for k in to_add + keep:
         app = apps[k]
         app_dir = make_state_dir(service_key, os.path.join(slug, k))
         keys_path = app_dir / "gcp-oauth.keys.json"
         token_path = app_dir / app["token_file"]
-        _write_gcp_oauth_keys(keys_path, client_id, secret)
+        if k in to_add or not keys_path.exists():
+            _write_gcp_oauth_keys(keys_path, client_id, secret)
 
         # Mint the token unless a valid one already exists and the user keeps it.
-        if token_path.exists() and confirm(
-                f"  {app['service_name']}: a token file already exists — keep it (skip browser)?",
-                default=True):
-            pass
-        elif not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
+        reuse = token_path.exists() and (k in keep or confirm(
+            f"  {app['service_name']}: a token file already exists — keep it (skip browser)?",
+            default=True))
+        if not reuse and not _run_google_app_auth(app, keys_path, token_path, app_dir, shim):
             print(f"  ⚠ skipping {app['service_name']} — not authorized.")
             continue
 

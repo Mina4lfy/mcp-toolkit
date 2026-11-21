@@ -24,7 +24,7 @@ class GoogleSetupCase(unittest.TestCase):
         self.claude_calls = []
         self._patch(setup_mcp, "STATE_ROOT", self.state_root)
         self._patch(setup_mcp, "claude_cmd", lambda *a: ["claude", *a])
-        self._patch(setup_mcp, "confirm", lambda *a, **k: True)
+        self._patch(setup_mcp, "confirm", lambda question, default=True: default)
         self._patch(setup_mcp.subprocess, "run", self._fake_run)
         self._patch(setup_mcp, "_ensure_undici_shim", lambda: None)
         self._patch(setup_mcp, "_ensure_mcp_timeout", lambda *a, **k: None)
@@ -77,6 +77,31 @@ class RemoveEveryApp(GoogleSetupCase):
         with mock.patch("builtins.input", side_effect=["none", "", "2", ""]):
             picked = setup_mcp.prompt_multiselect("pick", [("a", "A"), ("b", "B")])
         self.assertEqual(picked, ["b"])
+
+
+class RerunRepairsRegistrations(GoogleSetupCase):
+    def added(self):
+        return {c[5]: c for c in self.claude_calls if c[1:3] == ["mcp", "add"]}
+
+    def auth_runs(self):
+        return [c for c in self.claude_calls if c[0] == "npx" and c[-1] == "auth"]
+
+    def test_unchanged_selection_registers_every_kept_app_with_current_paths(self):
+        self.register(ALL_APPS)
+        self.assertEqual(self.run_setup(apps="gmail,drive,calendar"), 0)
+        added = self.added()
+        self.assertEqual(sorted(added), sorted(
+            f"{HANDLE}-{t}" for t in ("Gmail", "GoogleDrive", "GoogleCalendar")))
+        gmail_dir = self.state_root / "google" / HANDLE / "gmail"
+        self.assertIn(f"GMAIL_CREDENTIALS_PATH={gmail_dir / 'credentials.json'}",
+                      added[f"{HANDLE}-Gmail"])
+        self.assertEqual(self.auth_runs(), [])
+
+    def test_kept_app_without_a_token_is_authorized_again(self):
+        self.register(ALL_APPS)
+        (self.state_root / "google" / HANDLE / "drive" / "tokens.json").unlink()
+        self.run_setup(apps="gmail,drive,calendar")
+        self.assertEqual([c[2] for c in self.auth_runs()], ["@piotr-agier/google-drive-mcp"])
 
 
 if __name__ == "__main__":
